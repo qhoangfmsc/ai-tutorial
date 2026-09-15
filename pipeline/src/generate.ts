@@ -1,0 +1,102 @@
+import { join, basename, extname } from "node:path";
+import { mkdirSync } from "node:fs";
+import { parseScript } from "./parser";
+import { recordScript, CHROME_HEIGHT } from "./actor";
+import { assembleMainVideo, buildBrandClip, concatClips, padVideoEnd } from "./assemble";
+import { synthesize, type TtsResult } from "./tts";
+import { validateScript } from "./validate";
+
+const NARRATION_BUFFER_MS = 300;
+
+async function main() {
+  const scriptPath = process.argv[2];
+  if (!scriptPath) {
+    console.error("Cách dùng: tsx pipeline/src/generate.ts <script.yaml>");
+    process.exit(1);
+  }
+
+  const script = parseScript(scriptPath);
+  const name = basename(scriptPath, extname(scriptPath));
+  const outputDir = join("pipeline", "output", name);
+  const audioDir = join(outputDir, "audio");
+  mkdirSync(audioDir, { recursive: true });
+
+  console.log("▶ Kiểm tra kịch bản (dry-run, chưa quay hình)...");
+  await validateScript(script);
+  console.log("✔ Kịch bản hợp lệ, mọi mục tiêu đều tìm thấy.");
+
+  const synth = (text: string, baseNameNoExt: string): Promise<TtsResult> =>
+    synthesize(text, script.voice, join(audioDir, `${baseNameNoExt}.wav`), script.voiceRate);
+
+  console.log(`▶ Sinh giọng đọc (${script.voice})...`);
+  const introAudio: TtsResult | null = script.intro?.narration
+    ? await synth(script.intro.narration, "intro")
+    : null;
+
+  const stepAudio: TtsResult[] = [];
+  for (let i = 0; i < script.steps.length; i++) {
+    stepAudio.push(await synth(script.steps[i].narration, `step-${i}`));
+  }
+
+  const outroAudio: TtsResult | null = script.outro?.narration
+    ? await synth(script.outro.narration, "outro")
+    : null;
+
+  const stepDurationsMs = script.steps.map((step, i) =>
+    Math.max(step.minDurationMs, stepAudio[i].durationMs + NARRATION_BUFFER_MS),
+  );
+
+  console.log(`▶ Đang thực thi kịch bản "${script.title}" (${script.steps.length} bước)...`);
+  const recording = await recordScript(script, outputDir, stepDurationsMs);
+  console.log(
+    `✔ Ghi hình xong: ${recording.videoPath} (${(recording.totalDurationMs / 1000).toFixed(1)}s)`,
+  );
+
+  console.log("▶ Đang dựng video chính (caption + giọng đọc)...");
+  const mainClipPath = join(outputDir, "main.mp4");
+  await assembleMainVideo(recording, stepAudio, mainClipPath);
+
+  const clips: string[] = [];
+
+  if (script.intro) {
+    console.log("▶ Đang dựng màn hình chào mở đầu...");
+    const introPath = join(outputDir, "intro.mp4");
+    await buildBrandClip(script.intro, introAudio, introPath, {
+      width: script.viewport.width,
+      height: script.viewport.height + CHROME_HEIGHT,
+    });
+    clips.push(introPath);
+  }
+
+  if (script.outro && script.outroGapMs > 0) {
+    // A real pause on the last frame, not just a longer crossfade — keeps
+    // the outro's narration from starting while the last step's is still
+    // trailing off.
+    const paddedMainPath = join(outputDir, "main-padded.mp4");
+    await padVideoEnd(mainClipPath, script.outroGapMs, paddedMainPath);
+    clips.push(paddedMainPath);
+  } else {
+    clips.push(mainClipPath);
+  }
+
+  if (script.outro) {
+    console.log("▶ Đang dựng màn hình cảm ơn kết thúc...");
+    const outroPath = join(outputDir, "outro.mp4");
+    await buildBrandClip(script.outro, outroAudio, outroPath, {
+      width: script.viewport.width,
+      height: script.viewport.height + CHROME_HEIGHT,
+    });
+    clips.push(outroPath);
+  }
+
+  const finalPath = join(outputDir, "final.mp4");
+  console.log("▶ Đang ghép các đoạn lại thành video hoàn chỉnh...");
+  await concatClips(clips, finalPath);
+
+  console.log(`✔ Hoàn tất: ${finalPath}`);
+}
+
+main().catch((err) => {
+  console.error("✘ Lỗi:", err.message ?? err);
+  process.exit(1);
+});

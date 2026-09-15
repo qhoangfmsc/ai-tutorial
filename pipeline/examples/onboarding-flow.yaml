@@ -1,0 +1,76 @@
+title: "Hướng dẫn tạo dự án mới trên Demo Tutorial"
+viewport:
+  width: 1280
+  height: 720
+voice: "Linh"
+
+intro:
+  heading: "Demo Tutorial"
+  subheading: "Hướng dẫn tạo dự án mới"
+  narration: "Chào bạn! tôi sẽ hướng dẫn bạn tạo một dự án mới."
+  durationMs: 2000
+
+outro:
+  heading: "Demo Tutorial"
+  subheading: "Cảm ơn bạn đã theo dõi!"
+  narration: "Cảm ơn bạn đã theo dõi!"
+  durationMs: 2000
+
+steps:
+  - narration: "Đây là trang chủ của Demo Tutorial."
+    caption: "Trang chủ"
+    action:
+      type: goto
+      url: "http://localhost:3000"
+
+  - narration: "Nhập địa chỉ để vào trang quản lý dự án."
+    caption: "Gõ địa chỉ trang quản lý"
+    action:
+      type: goto
+      url: "http://localhost:3000/dashboard"
+
+  - narration: "Nhấn nút Tạo dự án mới."
+    caption: "Bước 1: Nhấn 'Tạo dự án mới'"
+    zoom:
+      level: 1.6
+    action:
+      type: click
+      find:
+        text: "Tạo dự án mới"
+        role: "button"
+
+  - narration: "Nhấn Tiếp tục thiết lập."
+    caption: "Bước 2: Xác nhận trong hộp thoại"
+    action:
+      type: click
+      find:
+        text: "Tiếp tục thiết lập"
+        role: "button"
+        near: "Bạn sẽ được chuyển sang bước thiết lập"
+
+  - narration: "Nhập tên dự án."
+    caption: "Bước 3: Nhập tên dự án"
+    zoom:
+      level: 1.5
+    action:
+      type: type
+      selector: "[data-tutorial='input-name']"
+      value: "Website bán hàng"
+
+  - narration: "Cuộn xuống để xem thêm các trường thông tin."
+    caption: "Cuộn xuống"
+    action:
+      type: scroll
+      y: 500
+
+  - narration: "Nhấn Hoàn tất."
+    caption: "Bước 4: Nhấn 'Hoàn tất'"
+    action:
+      type: click
+      selector: "[data-tutorial='submit-btn']"
+
+  - narration: "Vậy là xong, dự án đã được tạo thành công."
+    caption: "Hoàn tất"
+    action:
+      type: scroll
+      y: -800

@@ -1,0 +1,64 @@
+title: "Hướng dẫn cách vào trang đăng nhập Google Account"
+viewport:
+  width: 1280
+  height: 720
+voice: "Linh"
+
+intro:
+  heading: "Google Account"
+  subheading: "Hướng dẫn vào trang đăng nhập"
+  narration: "Xin chào! Cùng xem cách vào trang đăng nhập Google Account."
+
+outro:
+  heading: "Hoàn tất"
+  subheading: "Cảm ơn bạn đã theo dõi!"
+  narration: "Cảm ơn bạn đã theo dõi!"
+
+steps:
+  - narration: "Đầu tiên, truy cập trang chủ Google."
+    caption: "Trang chủ Google"
+    action:
+      type: goto
+      url: "https://www.google.com/?hl=en"
+
+  - narration: "Nhấn vào biểu tượng Google Apps, gồm 9 dấu chấm."
+    caption: "Mở Google Apps"
+    zoom:
+      level: 1.6
+    action:
+      type: click
+      find:
+        text: "Google apps"
+        role: "button"
+
+  - narration: "Chọn mục Account trong bảng ứng dụng."
+    caption: "Chọn 'Account'"
+    zoom:
+      level: 1.6
+    action:
+      type: click
+      find:
+        text: "Account"
+        role: "link"
+        frame: "iframe[src*='ogs.google.com']"
+
+  - narration: "Nhấn nút Go to Google Account để đăng nhập."
+    caption: "Nhấn 'Go to Google Account'"
+    zoom:
+      level: 1.5
+    action:
+      type: click
+      find:
+        text: "Go to your Google Account"
+        role: "link"
+
+  - narration: "Bạn sẽ được yêu cầu nhập email hoặc số điện thoại, sau đó là mật khẩu để đăng nhập."
+    caption: "Nhập tài khoản Google"
+    minDurationMs: 2500
+    zoom:
+      level: 1.4
+    action:
+      type: waitForSelector
+      find:
+        text: "Email or phone"
+        role: "textbox"
