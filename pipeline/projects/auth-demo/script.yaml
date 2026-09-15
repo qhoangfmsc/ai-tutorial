@@ -28,7 +28,6 @@ steps:
 
   - narration: "Thấy ngay huy hiệu đã đăng nhập, nhờ session được nạp sẵn từ file cấu hình."
     caption: "Đã đăng nhập sẵn"
-    minDurationMs: 2500
     zoom:
       level: 1.8
     action:

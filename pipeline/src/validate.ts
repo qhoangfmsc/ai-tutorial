@@ -1,9 +1,7 @@
 import { chromium } from "playwright";
 import type { Action, TutorialScript } from "./schema";
-import { resolveLocator, expandHome } from "./actor";
+import { resolveLocator, clickCatchingPopup, withRetry, TIMING } from "./actor";
 import { applyAuth } from "./auth";
-
-const TARGET_TIMEOUT_MS = 5000;
 
 function describeTarget(action: Action): string {
   if ("selector" in action && action.selector) return `selector "${action.selector}"`;
@@ -43,26 +41,19 @@ export async function validateScript(script: TutorialScript): Promise<void> {
           ? page.locator(step.highlightSelector)
           : resolveLocator(page, action);
         if (targetLocator) {
-          await targetLocator.waitFor({ timeout: TARGET_TIMEOUT_MS });
+          // A slow/flaky network response can make the target show up just
+          // after a single wait would have given up — retry the wait
+          // itself (read-only, safe to repeat) before failing the step.
+          await withRetry(() => targetLocator.waitFor({ timeout: TIMING.targetWaitMs }));
         }
 
         switch (action.type) {
           case "goto":
-            await page.goto(action.url, { waitUntil: "load" });
+            await withRetry(() => page.goto(action.url, { waitUntil: "load" }));
             break;
           case "click": {
-            // Mirror actor.ts: a target="_blank" link would otherwise open a
-            // popup the rest of the script never sees, breaking validation.
-            const popupPromise = page
-              .context()
-              .waitForEvent("page", { timeout: 1500 })
-              .catch(() => null);
-            await resolveLocator(page, action)!.click();
-            const popup = await popupPromise;
-            if (popup) {
-              await popup.waitForLoadState("load").catch(() => {});
-              const popupUrl = popup.url();
-              await popup.close();
+            const popupUrl = await clickCatchingPopup(page, resolveLocator(page, action)!);
+            if (popupUrl) {
               await page.goto(popupUrl, { waitUntil: "load" });
             }
             break;
@@ -90,7 +81,16 @@ export async function validateScript(script: TutorialScript): Promise<void> {
           case "waitForSelector":
             break; // already waited for above
           case "upload":
-            await resolveLocator(page, action)!.setInputFiles(expandHome(action.filePath));
+            // Unlike the other actions here, actually uploading hits a real
+            // server (and for something like an avatar, changes real
+            // account state) — not worth doing twice per run just to
+            // validate. Confirm the <input type="file"> exists instead;
+            // it's commonly hidden (class="hidden"), so check "attached"
+            // rather than the default "visible".
+            await resolveLocator(page, action)!.waitFor({
+              timeout: TIMING.targetWaitMs,
+              state: "attached",
+            });
             break;
         }
       } catch (err) {

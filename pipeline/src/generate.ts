@@ -6,8 +6,6 @@ import { assembleMainVideo, buildBrandClip, concatClips, padVideoEnd } from "./a
 import { synthesize, type TtsResult } from "./tts";
 import { validateScript } from "./validate";
 
-const NARRATION_BUFFER_MS = 300;
-
 /**
  * Each tutorial is a self-contained folder under pipeline/projects/<name>/:
  *   script.yaml   — the tutorial script (required)
@@ -52,25 +50,19 @@ async function main() {
     synthesize(text, script.voice, join(audioDir, `${baseNameNoExt}.wav`), script.voiceRate);
 
   console.log(`▶ Sinh giọng đọc (${script.voice})...`);
-  const introAudio: TtsResult | null = script.intro?.narration
-    ? await synth(script.intro.narration, "intro")
-    : null;
+  // Every narration line is an independent `say`+ffmpeg subprocess pair —
+  // running them concurrently instead of one-by-one cuts this phase's wall
+  // time roughly by the number of lines, with no effect on the result.
+  const [introAudio, stepAudio, outroAudio] = await Promise.all([
+    script.intro?.narration ? synth(script.intro.narration, "intro") : Promise.resolve(null),
+    Promise.all(script.steps.map((step, i) => synth(step.narration, `step-${i}`))),
+    script.outro?.narration ? synth(script.outro.narration, "outro") : Promise.resolve(null),
+  ]);
 
-  const stepAudio: TtsResult[] = [];
-  for (let i = 0; i < script.steps.length; i++) {
-    stepAudio.push(await synth(script.steps[i].narration, `step-${i}`));
-  }
-
-  const outroAudio: TtsResult | null = script.outro?.narration
-    ? await synth(script.outro.narration, "outro")
-    : null;
-
-  const stepDurationsMs = script.steps.map((step, i) =>
-    Math.max(step.minDurationMs, stepAudio[i].durationMs + NARRATION_BUFFER_MS),
-  );
+  const audioDurationsMs = stepAudio.map((a) => a.durationMs);
 
   console.log(`▶ Đang thực thi kịch bản "${script.title}" (${script.steps.length} bước)...`);
-  const recording = await recordScript(script, processDir, stepDurationsMs);
+  const recording = await recordScript(script, processDir, audioDurationsMs);
   console.log(
     `✔ Ghi hình xong: ${recording.videoPath} (${(recording.totalDurationMs / 1000).toFixed(1)}s)`,
   );

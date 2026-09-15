@@ -101,8 +101,6 @@ export const StepSchema = z.object({
    * Defaults to the action's own selector when the action targets one.
    */
   highlightSelector: z.string().min(1).optional(),
-  /** Minimum time this step stays on screen, in ms. */
-  minDurationMs: z.number().int().nonnegative().default(1500),
   /** Camera zoom-in on the step's target while it plays; zooms back out after the action. */
   zoom: z
     .object({
@@ -133,8 +131,15 @@ export const ScriptSchema = z.object({
   voiceRate: z.number().int().positive().default(175),
   intro: BrandScreenSchema.optional(),
   outro: BrandScreenSchema.optional(),
-  /** Silent hold on the last frame before cutting to outro — keeps its narration from bleeding into the last step's audio. */
-  outroGapMs: z.number().int().nonnegative().default(1000),
+  /**
+   * Silent hold on the last frame before cutting to outro — keeps its
+   * narration from bleeding into the last step's audio. Kept small: the
+   * last step already ends with its own breathing gap (narration finishes,
+   * then a short pause) before this even starts, so this only needs to
+   * cover the little bit extra a full scene-change deserves, not a second
+   * full pause on top of it.
+   */
+  outroGapMs: z.number().int().nonnegative().default(400),
   /**
    * How to start the browser already logged in. Pick whichever the target
    * app actually needs — a full session snapshot, plain cookies, or just

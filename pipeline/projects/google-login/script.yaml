@@ -54,7 +54,6 @@ steps:
 
   - narration: "Bạn sẽ được yêu cầu nhập email hoặc số điện thoại, sau đó là mật khẩu để đăng nhập."
     caption: "Nhập tài khoản Google"
-    minDurationMs: 2500
     zoom:
       level: 1.4
     action:

@@ -45,11 +45,13 @@ Xem `pipeline/projects/onboarding-flow/script.yaml`. Ở cấp script:
   - `narration`: câu sẽ được đọc bằng TTS.
   - `caption` _(tuỳ chọn)_: chữ hiển thị trên clip trong lúc step diễn ra.
   - `action`: thao tác Playwright — `goto`, `click`, `type`, `press`,
-    `hover`, `scroll`, `wait`, `waitForSelector`. Xem `src/schema.ts` để
-    biết đầy đủ tham số từng loại.
+    `hover`, `scroll`, `wait`, `waitForSelector`, `upload`. Xem
+    `src/schema.ts` để biết đầy đủ tham số từng loại.
   - `highlightSelector` _(tuỳ chọn)_: mặc định lấy theo selector của
     action; khoanh khung đỏ quanh phần tử này.
-  - `minDurationMs`: thời gian tối thiểu step hiển thị (mặc định 1500ms).
+  - Mỗi step kéo dài đúng bằng thời gian đọc narration hoặc thời gian action
+    thực thi (tuỳ cái nào lâu hơn), cộng thêm một khoảng nghỉ nhịp cố định
+    trước khi sang step kế — không có "thời lượng tối thiểu" ép buộc nữa.
 
 ## Kiến trúc
 

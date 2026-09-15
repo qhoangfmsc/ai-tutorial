@@ -10,9 +10,85 @@ export function expandHome(path: string): string {
   return path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
 }
 
+/**
+ * Every pacing/animation/timeout duration lives here — tune the overall
+ * feel (or how patient network waits are) in one place instead of hunting
+ * through each helper for a magic number.
+ */
+export const TIMING = {
+  /** How long the highlight box takes to fade/scale in or out. */
+  highlightFadeMs: 300,
+  /**
+   * Floor on how long the highlight sits fully visible before the action
+   * fires — just enough for a viewer to register the target even when the
+   * step has no narration at all. The *actual* hold time tracks the
+   * step's narration length (see recordScript), so the click lands right
+   * as the sentence about it finishes instead of always waiting a fixed
+   * amount regardless of how short (or long) that sentence is.
+   */
+  minHighlightSettleMs: 800,
+  /** Cursor glide duration from its previous position to the next target. */
+  cursorMoveMs: 500,
+  /** Camera zoom in/out transition. */
+  zoomTransitionMs: 500,
+  /** `scrollIntoView`/manual-scroll animation. */
+  scrollAnimationMs: 600,
+  /** Per-character delay while "typing" a URL, before the total-time cap kicks in. */
+  urlTypeCharMs: 45,
+  /** Hard cap on total URL-typing time regardless of length — a long admin-panel URL shouldn't stretch the scene out. */
+  urlTypeMaxMs: 1800,
+  /** Pause after typing finishes, like a person pausing before hitting Enter. */
+  urlTypeEnterPauseMs: 350,
+  /** Loading-bar sweep animation duration — must match the CSS keyframe in `buildWrapperHtml`. */
+  loadingBarSweepMs: 550,
+  /**
+   * Fixed breathing pause after a step's narration *and* action have both
+   * finished, before the next step starts — like a person pausing between
+   * sentences, not a padded-out minimum scene length.
+   */
+  stepGapMs: 500,
+  /**
+   * How long to wait for a target="_blank" popup before assuming there
+   * isn't one. This has no early-exit — a click with no popup always pays
+   * this in full — so it's kept short: a real popup opens within a few ms
+   * of the click, it doesn't need anywhere near a full second of margin.
+   */
+  popupWaitMs: 400,
+  /** How long to wait for a triggered navigation to actually commit before giving up on it. */
+  navigationWaitMs: 5000,
+  /** How long to wait for a step's target element to appear before giving up on highlighting/acting on it. */
+  targetWaitMs: 5000,
+  /** How many times to retry a flaky, side-effect-free wait (target lookup, navigation) before failing for real. */
+  retryAttempts: 2,
+  /** Pause between retry attempts. */
+  retryDelayMs: 800,
+} as const;
+
+/**
+ * Retries a flaky async operation a couple of times with a short delay.
+ * Scoped to read-only/idempotent operations (waiting for a target to
+ * appear, navigating to a URL) — never wrap a click/type/upload in this,
+ * since retrying one that partially succeeded could double-fire a real
+ * mutation (double-submit a form, upload twice, ...).
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  attempts: number = TIMING.retryAttempts,
+  delayMs: number = TIMING.retryDelayMs,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 export interface StepTiming {
-  index: number;
-  narration: string;
   caption?: string;
   /** Offset from the start of the recording, in ms, when this step begins. */
   startMs: number;
@@ -74,13 +150,13 @@ function buildWrapperHtml(viewportWidth: number, viewportHeight: number): string
       font-family:system-ui,sans-serif;}
     #pill{position:absolute;top:${(CHROME_HEIGHT - PILL_HEIGHT) / 2}px;left:50%;transform:translateX(-50%);
       width:min(520px,80%);height:${PILL_HEIGHT}px;box-sizing:border-box;background:white;
-      border:1px solid #d5d5d5;border-radius:999px;display:flex;align-items:center;padding:0 14px;
+      border:1px solid #d5d5d5;border-radius:999px;display:flex;align-items:center;justify-content:center;padding:0 14px;
       overflow:hidden;white-space:nowrap;}
     #url-text{font-size:13px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     #loading-bar{position:absolute;bottom:0;left:0;width:100%;height:2px;overflow:hidden;}
     #loading-bar::after{content:'';position:absolute;top:0;left:-30%;width:30%;height:100%;
       background:#2563eb;}
-    #loading-bar.active::after{animation:loading-sweep 550ms ease-in-out;}
+    #loading-bar.active::after{animation:loading-sweep ${TIMING.loadingBarSweepMs}ms ease-in-out;}
     @keyframes loading-sweep{from{left:-30%;}to{left:100%;}}
     #site-viewport{position:absolute;top:${CHROME_HEIGHT}px;left:0;width:${viewportWidth}px;
       height:${viewportHeight}px;overflow:hidden;}
@@ -156,12 +232,6 @@ export function resolveLocator(root: LocatorRoot, action: Action): Locator | nul
 }
 
 const HIGHLIGHT_ID = "__tutorial_highlight__";
-/** How long the box takes to fade/scale in or out, in ms. */
-const HIGHLIGHT_FADE_MS = 300;
-/** Pause with the box fully visible before the action fires, so viewers register the target. */
-const HIGHLIGHT_SETTLE_MS = 2000;
-/** Minimum time to hold the resulting screen after an action, before cutting to the next step. */
-const POST_ACTION_OBSERVE_MS = 1500;
 
 async function showHighlight(page: Page, box: Box): Promise<void> {
   await page.evaluate(
@@ -197,7 +267,7 @@ async function showHighlight(page: Page, box: Box): Promise<void> {
         });
       });
     },
-    { box, id: HIGHLIGHT_ID, fadeMs: HIGHLIGHT_FADE_MS },
+    { box, id: HIGHLIGHT_ID, fadeMs: TIMING.highlightFadeMs },
   );
 }
 
@@ -213,12 +283,12 @@ async function clearHighlight(page: Page): Promise<void> {
         el.style.transform = "scale(0.92)";
         return true;
       },
-      { id: HIGHLIGHT_ID, fadeMs: HIGHLIGHT_FADE_MS },
+      { id: HIGHLIGHT_ID, fadeMs: TIMING.highlightFadeMs },
     )
     .catch(() => false);
 
   if (didFade) {
-    await page.waitForTimeout(HIGHLIGHT_FADE_MS);
+    await page.waitForTimeout(TIMING.highlightFadeMs);
   }
 
   await page
@@ -231,7 +301,6 @@ async function clearHighlight(page: Page): Promise<void> {
 }
 
 const CURSOR_ID = "__tutorial_cursor__";
-const CURSOR_MOVE_MS = 500;
 
 /**
  * A classic arrow-pointer silhouette, tip at (0,0) — matching a real OS
@@ -344,8 +413,6 @@ function isPointerAction(
   );
 }
 
-
-const ZOOM_TRANSITION_MS = 500;
 const SITE_FRAME_SELECTOR = "#site-frame";
 
 /**
@@ -366,12 +433,10 @@ async function setZoom(page: Page, level: number, origin: Point | null): Promise
         }
         el.style.transform = level === 1 ? "" : `scale(${level})`;
       },
-      { level, origin, durationMs: ZOOM_TRANSITION_MS, chromeHeight: CHROME_HEIGHT, sel: SITE_FRAME_SELECTOR },
+      { level, origin, durationMs: TIMING.zoomTransitionMs, chromeHeight: CHROME_HEIGHT, sel: SITE_FRAME_SELECTOR },
     )
     .catch(() => {});
 }
-
-const SCROLL_ANIMATION_MS = 600;
 
 /** Scrolls the site frame's own document by `deltaY` with an eased animation. */
 async function smoothScrollBy(siteFrame: Frame, deltaY: number): Promise<void> {
@@ -388,12 +453,10 @@ async function smoothScrollBy(siteFrame: Frame, deltaY: number): Promise<void> {
         await new Promise((r) => setTimeout(r, frameDelay));
       }
     },
-    { deltaY, durationMs: SCROLL_ANIMATION_MS, frameCount },
+    { deltaY, durationMs: TIMING.scrollAnimationMs, frameCount },
   );
 }
 
-const URL_TYPE_CHAR_MS = 45;
-const URL_TYPE_ENTER_PAUSE_MS = 350;
 const URL_TEXT_SELECTOR = "#url-text";
 const LOADING_BAR_SELECTOR = "#loading-bar";
 
@@ -423,11 +486,18 @@ async function triggerLoadingBar(page: Page): Promise<void> {
     .catch(() => {});
 }
 
-/** Reveals `url` into the mockup address bar one character at a time. */
+/**
+ * Reveals `url` into the mockup address bar one character at a time, at a
+ * natural per-character pace — sped up (never slowed down) so a very long
+ * URL still finishes within `TIMING.urlTypeMaxMs` total instead of stretching
+ * the scene out.
+ */
 async function typeUrlBarText(page: Page, url: string): Promise<void> {
+  if (url.length === 0) return;
+  const charMs = Math.min(TIMING.urlTypeCharMs, TIMING.urlTypeMaxMs / url.length);
   for (let c = 1; c <= url.length; c++) {
     await setUrlBarText(page, url.slice(0, c));
-    await page.waitForTimeout(URL_TYPE_CHAR_MS);
+    await page.waitForTimeout(charMs);
   }
 }
 
@@ -471,32 +541,63 @@ async function ensureFramingBypass(page: Page, origin: string): Promise<void> {
   });
 }
 
-/**
- * Points the site iframe at `url` and waits for it to actually land — the
- * live `framenavigated` listener set up in recordScript keeps the mockup
- * address bar's text in sync automatically the instant that happens, so
- * there's no manual bookkeeping needed here. If the navigation gets
- * silently blocked by a framing header, retries once with that origin's
- * requests routed through `ensureFramingBypass`.
- */
-async function navigateSiteFrame(page: Page, siteFrame: Frame, url: string): Promise<void> {
+/** One plain attempt at pointing the site iframe at `url` and waiting for it to land. */
+async function attemptNavigateSiteFrame(page: Page, siteFrame: Frame, url: string): Promise<void> {
   const navigated = page
-    .waitForEvent("framenavigated", { predicate: (f) => f === siteFrame, timeout: 5000 })
+    .waitForEvent("framenavigated", { predicate: (f) => f === siteFrame, timeout: TIMING.navigationWaitMs })
     .catch(() => null);
   await setSiteFrameSrc(page, url);
   await navigated;
   await siteFrame.waitForLoadState("load").catch(() => {});
+}
 
+/**
+ * Points the site iframe at `url` and waits for it to actually land — the
+ * live `framenavigated` listener set up in recordScript keeps the mockup
+ * address bar's text in sync automatically the instant that happens, so
+ * there's no manual bookkeeping needed here.
+ *
+ * If it doesn't land, retries plain first (a slow/flaky network response
+ * looks identical to a framing block at this point) — only once that keeps
+ * failing does it assume a framing header is actually the cause and reach
+ * for `ensureFramingBypass`, which carries its own real risk (see there),
+ * so it's worth ruling out a simple timeout before applying it.
+ */
+async function navigateSiteFrame(page: Page, siteFrame: Frame, url: string): Promise<void> {
   const origin = new URL(url).origin;
-  if (!siteFrame.url().startsWith(origin)) {
-    await ensureFramingBypass(page, origin);
-    const retried = page
-      .waitForEvent("framenavigated", { predicate: (f) => f === siteFrame, timeout: 5000 })
-      .catch(() => null);
-    await setSiteFrameSrc(page, url);
-    await retried;
-    await siteFrame.waitForLoadState("load").catch(() => {});
+  const landed = () => siteFrame.url().startsWith(origin);
+
+  for (let attempt = 1; attempt <= TIMING.retryAttempts; attempt++) {
+    await attemptNavigateSiteFrame(page, siteFrame, url);
+    if (landed()) return;
   }
+
+  await ensureFramingBypass(page, origin);
+  await attemptNavigateSiteFrame(page, siteFrame, url);
+}
+
+/**
+ * Clicks `locator`, catching a `target="_blank"` popup if the click opens
+ * one — closing it and returning its URL instead of leaving it in a new
+ * tab, which would otherwise escape the single continuous recording (or,
+ * during validate.ts's dry run, escape the one page it's driving). Returns
+ * `null` when the click didn't open a popup. Shared by actor.ts and
+ * validate.ts, which each apply the resulting URL differently (into the
+ * site iframe vs. a plain page navigation).
+ */
+export async function clickCatchingPopup(page: Page, locator: Locator): Promise<string | null> {
+  const popupPromise = page
+    .context()
+    .waitForEvent("page", { timeout: TIMING.popupWaitMs })
+    .catch(() => null);
+  await locator.click();
+  const popup = await popupPromise;
+  if (!popup) return null;
+
+  await popup.waitForLoadState("load").catch(() => {});
+  const popupUrl = popup.url();
+  await popup.close();
+  return popupUrl;
 }
 
 async function runAction(
@@ -511,25 +612,14 @@ async function runAction(
       // A `goto` step means the user is typing a URL by hand — animate that
       // for real in the mockup bar, then actually navigate the iframe.
       await typeUrlBarText(page, action.url);
-      await page.waitForTimeout(URL_TYPE_ENTER_PAUSE_MS);
+      await page.waitForTimeout(TIMING.urlTypeEnterPauseMs);
       await navigateSiteFrame(page, siteFrame, action.url);
       break;
     }
     case "click": {
       if (cursorAt) await showClickRipple(page, cursorAt);
-      // Some links open in a new tab (target="_blank") — that would escape
-      // the single continuous recording. Catch the popup, if any, and fold
-      // it back into the site iframe instead of leaving it in a new tab.
-      const popupPromise = page
-        .context()
-        .waitForEvent("page", { timeout: 1500 })
-        .catch(() => null);
-      await resolveLocator(siteRoot, action)!.click();
-      const popup = await popupPromise;
-      if (popup) {
-        await popup.waitForLoadState("load").catch(() => {});
-        const popupUrl = popup.url();
-        await popup.close();
+      const popupUrl = await clickCatchingPopup(page, resolveLocator(siteRoot, action)!);
+      if (popupUrl) {
         await navigateSiteFrame(page, siteFrame, popupUrl);
       }
       break;
@@ -552,7 +642,7 @@ async function runAction(
         await locator.evaluate((el) => {
           el.scrollIntoView({ behavior: "smooth", block: "center" });
         });
-        await page.waitForTimeout(SCROLL_ANIMATION_MS);
+        await page.waitForTimeout(TIMING.scrollAnimationMs);
       } else {
         await smoothScrollBy(siteFrame, action.y ?? 400);
       }
@@ -562,7 +652,7 @@ async function runAction(
       await page.waitForTimeout(action.ms);
       break;
     case "waitForSelector":
-      await resolveLocator(siteRoot, action)!.waitFor();
+      await resolveLocator(siteRoot, action)!.waitFor({ timeout: TIMING.targetWaitMs });
       break;
     case "upload":
       // No real OS file-picker dialog opens (Playwright can't drive those) —
@@ -594,7 +684,7 @@ async function runAction(
 export async function recordScript(
   script: TutorialScript,
   outputDir: string,
-  stepDurationsMs: number[],
+  audioDurationsMs: number[],
 ): Promise<RecordingResult> {
   mkdirSync(outputDir, { recursive: true });
 
@@ -640,8 +730,6 @@ export async function recordScript(
   for (let i = 0; i < script.steps.length; i++) {
     const step = script.steps[i];
     steps.push({
-      index: i,
-      narration: step.narration,
       caption: step.caption,
       startMs: Date.now() - startedAt,
     });
@@ -653,7 +741,10 @@ export async function recordScript(
     let zoomTarget: Point | null = null;
 
     if (targetLocator) {
-      await targetLocator.waitFor({ timeout: 5000 }).catch(() => {});
+      // A slow/flaky network response can make the target show up just
+      // after a single wait would have given up — retry the wait itself
+      // (read-only, safe to repeat) before falling back to "no highlight".
+      await withRetry(() => targetLocator.waitFor({ timeout: TIMING.targetWaitMs })).catch(() => {});
       const box = await targetLocator.boundingBox().catch(() => null);
 
       if (box) {
@@ -665,17 +756,25 @@ export async function recordScript(
           await setZoom(page, step.zoom.level, target);
         }
 
+        // Hold the highlight roughly until the narration finishes — not a
+        // fixed pause regardless of what's being said — so the click lands
+        // right as the sentence about it ends, with just a floor so a
+        // narration-free (or very short) step still gives viewers a beat
+        // to register the target before it fires.
+        const elapsedSoFar = Date.now() - startedAt - steps[i].startMs;
+        const settleMs = Math.max(TIMING.minHighlightSettleMs, (audioDurationsMs[i] ?? 0) - elapsedSoFar);
+
         const pointerTarget = isPointerAction(step.action) ? target : null;
         if (pointerTarget) {
           await ensureCursor(page, cursorPos);
-          const moveMs = Math.min(CURSOR_MOVE_MS, HIGHLIGHT_SETTLE_MS);
+          const moveMs = Math.min(TIMING.cursorMoveMs, settleMs);
           await moveCursorTo(page, cursorPos, pointerTarget, moveMs);
           cursorPos = pointerTarget;
           cursorAt = pointerTarget;
-          const remaining = HIGHLIGHT_SETTLE_MS - moveMs;
+          const remaining = settleMs - moveMs;
           if (remaining > 0) await page.waitForTimeout(remaining);
         } else {
-          await page.waitForTimeout(HIGHLIGHT_SETTLE_MS);
+          await page.waitForTimeout(settleMs);
         }
       }
 
@@ -693,17 +792,13 @@ export async function recordScript(
       await setZoom(page, 1, null);
     }
 
-    // Always give viewers time to see the *result* of the action before the
-    // scene changes — independent of narration/caption timing.
-    const actionDoneOffsetMs = Date.now() - startedAt - steps[i].startMs;
-    const minDurationMs = Math.max(
-      stepDurationsMs[i] ?? step.minDurationMs,
-      actionDoneOffsetMs + POST_ACTION_OBSERVE_MS,
-    );
+    // The scene is only ever as long as it actually needs to be: enough for
+    // the narration to finish playing *and* for the action to have actually
+    // happened — whichever takes longer — plus one fixed breathing gap
+    // before the next step starts. No artificial floor beyond that.
     const elapsedForStep = Date.now() - startedAt - steps[i].startMs;
-    if (minDurationMs > elapsedForStep) {
-      await page.waitForTimeout(minDurationMs - elapsedForStep);
-    }
+    const remainingAudioMs = (audioDurationsMs[i] ?? 0) - elapsedForStep;
+    await page.waitForTimeout(Math.max(0, remainingAudioMs) + TIMING.stepGapMs);
   }
 
   const totalDurationMs = Date.now() - startedAt;
