@@ -73,6 +73,21 @@ export const ActionSchema = z.discriminatedUnion("type", [
   baseAction
     .extend({ type: z.literal("waitForSelector"), ...TargetFields })
     .refine(requireOneTarget, TARGET_ISSUE),
+  baseAction
+    .extend({
+      type: z.literal("upload"),
+      ...TargetFields,
+      /**
+       * Absolute path to the file to upload, or `~/...` for the user's home
+       * dir. Sets the target `<input type="file">`'s files directly — no
+       * real OS file-picker dialog is opened (Playwright can't drive those),
+       * so this works whether the target is the hidden input itself or is
+       * targeted via `highlightSelector` pointing at the visible control
+       * that would normally open it.
+       */
+      filePath: z.string().min(1),
+    })
+    .refine(requireOneTarget, TARGET_ISSUE),
 ]);
 
 export type Action = z.infer<typeof ActionSchema>;
@@ -120,6 +135,44 @@ export const ScriptSchema = z.object({
   outro: BrandScreenSchema.optional(),
   /** Silent hold on the last frame before cutting to outro — keeps its narration from bleeding into the last step's audio. */
   outroGapMs: z.number().int().nonnegative().default(1000),
+  /**
+   * How to start the browser already logged in. Pick whichever the target
+   * app actually needs — a full session snapshot, plain cookies, or just
+   * localStorage — and combine them if it needs more than one. Keep
+   * anything sensitive (the `storageState` file, or literal values here)
+   * OUTSIDE git.
+   */
+  auth: z
+    .object({
+      /** Path to a Playwright storageState JSON file (cookies + localStorage). */
+      storageState: z.string().min(1).optional(),
+      /** Cookies to set directly, for apps that only need a session cookie. */
+      cookies: z
+        .array(
+          z.object({
+            name: z.string().min(1),
+            value: z.string(),
+            domain: z.string().min(1),
+            path: z.string().default("/"),
+            httpOnly: z.boolean().default(false),
+            secure: z.boolean().default(false),
+            sameSite: z.enum(["Strict", "Lax", "None"]).default("Lax"),
+            /** Unix seconds; omit for a session cookie (expires with the browser). */
+            expires: z.number().optional(),
+          }),
+        )
+        .optional(),
+      /** localStorage entries to seed per-origin, for apps that don't use cookies at all. */
+      localStorage: z
+        .array(
+          z.object({
+            origin: z.string().url(),
+            items: z.record(z.string(), z.string()),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
   steps: z.array(StepSchema).min(1),
 });
 

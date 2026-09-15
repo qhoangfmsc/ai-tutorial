@@ -1,7 +1,14 @@
 import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Page, type Locator, type FrameLocator } from "playwright";
+import { homedir } from "node:os";
+import { chromium, type Page, type Locator, type FrameLocator, type Frame } from "playwright";
 import type { Action, Find, TutorialScript } from "./schema";
+import { applyAuth } from "./auth";
+
+/** Expands a leading `~` to the user's home dir; absolute paths pass through unchanged. */
+export function expandHome(path: string): string {
+  return path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
+}
 
 export interface StepTiming {
   index: number;
@@ -11,10 +18,77 @@ export interface StepTiming {
   startMs: number;
 }
 
+/**
+ * A locator root that's either the top-level page (validate.ts drives the
+ * real site directly, no wrapper) or a FrameLocator scoped into the
+ * `#site-frame` iframe that recordScript nests the target site inside — see
+ * the comment above `recordScript` for why.
+ */
+type LocatorRoot = Page | FrameLocator;
+
 export interface RecordingResult {
   videoPath: string;
   totalDurationMs: number;
   steps: StepTiming[];
+}
+
+/**
+ * Height (px) reserved for the mockup browser window. Unlike the earlier
+ * post-production version of this tool, the chrome bar is now real HTML
+ * rendered live in the recording (see `buildWrapperHtml`), and the target
+ * site is loaded in a same-height-shorter `<iframe>` below it — so this
+ * value both sizes the bar and tells assemble.ts/generate.ts how much
+ * taller the recorded video is than the script's own `viewport`.
+ */
+export const CHROME_HEIGHT = 44;
+const PILL_HEIGHT = 24;
+const DOT_SIZE = 11;
+const DOT_GAP = 6;
+const BAR_PADDING_X = 14;
+
+/**
+ * The wrapper page recordScript actually navigates to and records. It is
+ * *our own* document — the target site never runs in it directly, only
+ * inside `#site-frame`. Because `position: fixed`/`sticky`/`transform`
+ * inside an iframe are always scoped to that iframe's own viewport (a CSS
+ * fact, not a per-site guess), nothing the target site's CSS does can ever
+ * reach outside the iframe box to collide with the chrome bar — no DOM
+ * scanning or site-specific patching required, and it holds for arbitrary
+ * sites the same way a real browser's own chrome never gets covered by a
+ * page's `position: fixed` header.
+ */
+function buildWrapperHtml(viewportWidth: number, viewportHeight: number): string {
+  const dotsY = (CHROME_HEIGHT - DOT_SIZE) / 2;
+  const dots = ["#ff5f57", "#febc2e", "#28c840"]
+    .map(
+      (c, i) =>
+        `<span style="position:absolute;top:${dotsY}px;left:${BAR_PADDING_X + i * (DOT_SIZE + DOT_GAP)}px;` +
+        `width:${DOT_SIZE}px;height:${DOT_SIZE}px;border-radius:50%;background:${c};"></span>`,
+    )
+    .join("");
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;padding:0;overflow:hidden;width:${viewportWidth}px;height:${viewportHeight + CHROME_HEIGHT}px;}
+    #chrome{position:absolute;top:0;left:0;width:${viewportWidth}px;height:${CHROME_HEIGHT}px;
+      box-sizing:border-box;background:#e7e7e7;border-bottom:1px solid #cfcfcf;
+      font-family:system-ui,sans-serif;}
+    #pill{position:absolute;top:${(CHROME_HEIGHT - PILL_HEIGHT) / 2}px;left:50%;transform:translateX(-50%);
+      width:min(520px,80%);height:${PILL_HEIGHT}px;box-sizing:border-box;background:white;
+      border:1px solid #d5d5d5;border-radius:999px;display:flex;align-items:center;padding:0 14px;
+      overflow:hidden;white-space:nowrap;}
+    #url-text{font-size:13px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    #loading-bar{position:absolute;bottom:0;left:0;width:100%;height:2px;overflow:hidden;}
+    #loading-bar::after{content:'';position:absolute;top:0;left:-30%;width:30%;height:100%;
+      background:#2563eb;}
+    #loading-bar.active::after{animation:loading-sweep 550ms ease-in-out;}
+    @keyframes loading-sweep{from{left:-30%;}to{left:100%;}}
+    #site-viewport{position:absolute;top:${CHROME_HEIGHT}px;left:0;width:${viewportWidth}px;
+      height:${viewportHeight}px;overflow:hidden;}
+    #site-frame{position:absolute;top:0;left:0;width:100%;height:100%;border:0;}
+  </style></head><body>
+    <div id="chrome">${dots}<div id="pill"><span id="url-text"></span></div><div id="loading-bar"></div></div>
+    <div id="site-viewport"><iframe id="site-frame" src="about:blank"></iframe></div>
+  </body></html>`;
 }
 
 interface Point {
@@ -36,8 +110,8 @@ function centerOfBox(box: Box): Point {
  * Playwright locator using accessibility-based lookups — works on any real
  * page's rendered output, no HTML/data-attribute access required.
  */
-function locateByDescription(page: Page, find: Find): Locator {
-  let scope: Page | Locator | FrameLocator = find.frame ? page.frameLocator(find.frame) : page;
+function locateByDescription(root: LocatorRoot, find: Find): Locator {
+  let scope: LocatorRoot | Locator = find.frame ? root.frameLocator(find.frame) : root;
 
   if (find.near) {
     // The smallest container that mentions both the section label and the
@@ -64,17 +138,18 @@ function locateByDescription(page: Page, find: Find): Locator {
 }
 
 /** Resolves whichever target form (`selector` or `find`) an action declares. */
-export function resolveLocator(page: Page, action: Action): Locator | null {
+export function resolveLocator(root: LocatorRoot, action: Action): Locator | null {
   switch (action.type) {
     case "click":
     case "hover":
     case "waitForSelector":
     case "type":
-      if (action.selector) return page.locator(action.selector);
-      if (action.find) return locateByDescription(page, action.find);
+    case "upload":
+      if (action.selector) return root.locator(action.selector);
+      if (action.find) return locateByDescription(root, action.find);
       return null;
     case "scroll":
-      return action.selector ? page.locator(action.selector) : null;
+      return action.selector ? root.locator(action.selector) : null;
     default:
       return null;
   }
@@ -258,255 +333,50 @@ async function showClickRipple(page: Page, pos: Point): Promise<void> {
     .catch(() => {});
 }
 
-function isPointerAction(action: Action): action is Extract<Action, { type: "click" | "type" | "hover" }> {
-  return action.type === "click" || action.type === "type" || action.type === "hover";
+function isPointerAction(
+  action: Action,
+): action is Extract<Action, { type: "click" | "type" | "hover" | "upload" }> {
+  return (
+    action.type === "click" ||
+    action.type === "type" ||
+    action.type === "hover" ||
+    action.type === "upload"
+  );
 }
 
-/** Height (px) reserved at the top of the recording for the fake browser chrome. */
-export const CHROME_HEIGHT = 44;
-const CHROME_ID = "__tutorial_chrome__";
-
-/** Injects (once) a macOS-style toolbar with a live address bar showing `url`. */
-async function ensureBrowserChrome(page: Page, url: string): Promise<void> {
-  await page
-    .evaluate(
-      ({ id, height, url }) => {
-        if (!document.body.style.paddingTop) {
-          document.body.style.paddingTop = `${height}px`;
-        }
-
-        let bar = document.getElementById(id);
-        if (!bar) {
-          bar = document.createElement("div");
-          bar.id = id;
-          Object.assign(bar.style, {
-            position: "fixed",
-            top: "0",
-            left: "0",
-            right: "0",
-            height: `${height}px`,
-            background: "#e7e7e7",
-            borderBottom: "1px solid #cfcfcf",
-            display: "flex",
-            alignItems: "center",
-            gap: "16px",
-            padding: "0 14px",
-            zIndex: "2147483647",
-            fontFamily: "system-ui, sans-serif",
-          });
-
-          const dots = document.createElement("div");
-          Object.assign(dots.style, { display: "flex", gap: "6px", flex: "none" });
-          for (const color of ["#ff5f57", "#febc2e", "#28c840"]) {
-            const dot = document.createElement("span");
-            Object.assign(dot.style, {
-              width: "11px",
-              height: "11px",
-              borderRadius: "50%",
-              background: color,
-              display: "inline-block",
-            });
-            dots.appendChild(dot);
-          }
-          bar.appendChild(dots);
-
-          const addressWrap = document.createElement("div");
-          Object.assign(addressWrap.style, {
-            flex: "1",
-            display: "flex",
-            justifyContent: "center",
-          });
-          const address = document.createElement("div");
-          address.id = `${id}-address`;
-          Object.assign(address.style, {
-            background: "white",
-            border: "1px solid #d5d5d5",
-            borderRadius: "999px",
-            padding: "5px 18px",
-            fontSize: "13px",
-            color: "#333",
-            maxWidth: "520px",
-            width: "100%",
-            textAlign: "center",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            transition: "transform 260ms ease, box-shadow 260ms ease",
-          });
-          addressWrap.appendChild(address);
-          bar.appendChild(addressWrap);
-          document.body.appendChild(bar);
-        }
-
-        const addressEl = document.getElementById(`${id}-address`);
-        if (addressEl) addressEl.textContent = url;
-      },
-      { id: CHROME_ID, height: CHROME_HEIGHT, url },
-    )
-    .catch(() => {
-      // Page mid-navigation — the next step re-injects the chrome anyway.
-    });
-}
-
-/** Briefly scales/glows the address bar to draw the eye to a URL change. */
-async function pulseAddressBar(page: Page): Promise<void> {
-  await page
-    .evaluate((id) => {
-      const el = document.getElementById(`${id}-address`) as HTMLElement | null;
-      if (!el) return;
-      el.style.transform = "scale(1.15)";
-      el.style.boxShadow = "0 0 0 3px rgba(37,99,235,0.35)";
-      setTimeout(() => {
-        el.style.transform = "scale(1)";
-        el.style.boxShadow = "none";
-      }, 280);
-    }, CHROME_ID)
-    .catch(() => {});
-}
-
-const LOADING_BAR_ID = "__tutorial_loading_bar__";
-const LOADING_BAR_MS = 450;
-
-/** Shows a thin indeterminate progress bar under the chrome, like a real page load. */
-async function showLoadingBar(page: Page): Promise<void> {
-  await page
-    .evaluate(
-      ({ id, chromeHeight, durationMs }) => {
-        document.getElementById(id)?.remove();
-
-        const track = document.createElement("div");
-        track.id = id;
-        Object.assign(track.style, {
-          position: "fixed",
-          top: `${chromeHeight}px`,
-          left: "0",
-          right: "0",
-          height: "3px",
-          background: "transparent",
-          zIndex: "2147483647",
-          overflow: "hidden",
-        });
-
-        const bar = document.createElement("div");
-        Object.assign(bar.style, {
-          position: "absolute",
-          top: "0",
-          bottom: "0",
-          width: "40%",
-          background: "#2563eb",
-          borderRadius: "0 2px 2px 0",
-          transition: `left ${durationMs}ms ease-in-out`,
-          left: "-40%",
-        });
-        track.appendChild(bar);
-        document.body.appendChild(track);
-
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            bar.style.left = "100%";
-          });
-        });
-      },
-      { id: LOADING_BAR_ID, chromeHeight: CHROME_HEIGHT, durationMs: LOADING_BAR_MS },
-    )
-    .catch(() => {});
-}
-
-async function hideLoadingBar(page: Page): Promise<void> {
-  await page
-    .evaluate((id) => {
-      document.getElementById(id)?.remove();
-    }, LOADING_BAR_ID)
-    .catch(() => {});
-}
-
-const URL_TYPE_DELAY_MS = 45;
-const URL_TYPE_ENTER_PAUSE_MS = 350;
-
-/**
- * Simulates a person clicking the address bar and typing a URL by hand —
- * distinct from an in-app redirect, which just updates the text and pulses.
- * Runs entirely before the real navigation, on the page that's about to
- * be left, so it must be called before `page.goto()`.
- */
-async function typeUrlIntoAddressBar(page: Page, url: string, cursorPos: Point): Promise<Point> {
-  const addressBox = await page
-    .locator(`#${CHROME_ID}-address`)
-    .boundingBox()
-    .catch(() => null);
-  const addressCenter = addressBox ? centerOfBox(addressBox) : null;
-
-  if (addressCenter) {
-    await ensureCursor(page, cursorPos);
-    await moveCursorTo(page, cursorPos, addressCenter, CURSOR_MOVE_MS);
-    await showClickRipple(page, addressCenter);
-  }
-
-  await page
-    .evaluate((id) => {
-      const el = document.getElementById(`${id}-address`) as HTMLElement | null;
-      if (!el) return;
-      el.style.outline = "2px solid #2563eb";
-      el.style.outlineOffset = "1px";
-      el.style.textAlign = "left";
-      el.textContent = "";
-    }, CHROME_ID)
-    .catch(() => {});
-
-  for (let i = 1; i <= url.length; i++) {
-    await page
-      .evaluate(
-        ({ id, text }) => {
-          const el = document.getElementById(`${id}-address`);
-          if (el) el.textContent = text;
-        },
-        { id: CHROME_ID, text: url.slice(0, i) },
-      )
-      .catch(() => {});
-    await page.waitForTimeout(URL_TYPE_DELAY_MS);
-  }
-
-  // A beat to read the finished URL before "pressing Enter".
-  await page.waitForTimeout(URL_TYPE_ENTER_PAUSE_MS);
-
-  await page
-    .evaluate((id) => {
-      const el = document.getElementById(`${id}-address`) as HTMLElement | null;
-      if (!el) return;
-      el.style.outline = "none";
-      el.style.textAlign = "center";
-    }, CHROME_ID)
-    .catch(() => {});
-
-  return addressCenter ?? cursorPos;
-}
 
 const ZOOM_TRANSITION_MS = 500;
+const SITE_FRAME_SELECTOR = "#site-frame";
 
-/** Zooms the whole page in/out around `origin`, keeping that point visually still. */
+/**
+ * Zooms the *site iframe* in/out around `origin` (a page-relative point —
+ * what `locator.boundingBox()` returns even for elements inside the
+ * iframe), keeping that point visually still. Scoped to the iframe, not the
+ * whole page, so the chrome bar stays crisp and un-zoomed.
+ */
 async function setZoom(page: Page, level: number, origin: Point | null): Promise<void> {
   await page
     .evaluate(
-      ({ level, origin, durationMs }) => {
-        const html = document.documentElement;
-        html.style.overflow = "hidden";
-        html.style.transition = `transform ${durationMs}ms ease`;
+      ({ level, origin, durationMs, chromeHeight, sel }) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return;
+        el.style.transition = `transform ${durationMs}ms ease`;
         if (origin) {
-          html.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+          el.style.transformOrigin = `${origin.x}px ${origin.y - chromeHeight}px`;
         }
-        html.style.transform = level === 1 ? "" : `scale(${level})`;
+        el.style.transform = level === 1 ? "" : `scale(${level})`;
       },
-      { level, origin, durationMs: ZOOM_TRANSITION_MS },
+      { level, origin, durationMs: ZOOM_TRANSITION_MS, chromeHeight: CHROME_HEIGHT, sel: SITE_FRAME_SELECTOR },
     )
     .catch(() => {});
 }
 
 const SCROLL_ANIMATION_MS = 600;
 
-/** Scrolls the page by `deltaY` with an eased animation, visible frame by frame. */
-async function smoothScrollBy(page: Page, deltaY: number): Promise<void> {
+/** Scrolls the site frame's own document by `deltaY` with an eased animation. */
+async function smoothScrollBy(siteFrame: Frame, deltaY: number): Promise<void> {
   const frameCount = 24;
-  await page.evaluate(
+  await siteFrame.evaluate(
     async ({ deltaY, durationMs, frameCount }) => {
       const startY = window.scrollY;
       const frameDelay = durationMs / frameCount;
@@ -522,36 +392,151 @@ async function smoothScrollBy(page: Page, deltaY: number): Promise<void> {
   );
 }
 
-async function runAction(page: Page, action: Action, cursorAt: Point | null): Promise<void> {
+const URL_TYPE_CHAR_MS = 45;
+const URL_TYPE_ENTER_PAUSE_MS = 350;
+const URL_TEXT_SELECTOR = "#url-text";
+const LOADING_BAR_SELECTOR = "#loading-bar";
+
+/** Sets the mockup address bar's text directly (no animation). */
+async function setUrlBarText(page: Page, text: string): Promise<void> {
+  await page
+    .evaluate(
+      ({ sel, text }) => {
+        const el = document.querySelector(sel);
+        if (el) el.textContent = text;
+      },
+      { sel: URL_TEXT_SELECTOR, text },
+    )
+    .catch(() => {});
+}
+
+/** Replays the thin loading-sweep animation under the chrome bar. */
+async function triggerLoadingBar(page: Page): Promise<void> {
+  await page
+    .evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      el.classList.remove("active");
+      void (el as HTMLElement).offsetWidth; // force reflow so the animation restarts
+      el.classList.add("active");
+    }, LOADING_BAR_SELECTOR)
+    .catch(() => {});
+}
+
+/** Reveals `url` into the mockup address bar one character at a time. */
+async function typeUrlBarText(page: Page, url: string): Promise<void> {
+  for (let c = 1; c <= url.length; c++) {
+    await setUrlBarText(page, url.slice(0, c));
+    await page.waitForTimeout(URL_TYPE_CHAR_MS);
+  }
+}
+
+async function setSiteFrameSrc(page: Page, url: string): Promise<void> {
+  await page.evaluate(
+    ({ sel, url }) => {
+      (document.querySelector(sel) as HTMLIFrameElement).src = url;
+    },
+    { sel: SITE_FRAME_SELECTOR, url },
+  );
+}
+
+/**
+ * `X-Frame-Options`/CSP `frame-ancestors` exist to stop a hostile third
+ * party framing a site for clickjacking — irrelevant here, since the outer
+ * page is our own private recording harness. But rewriting *every* site's
+ * document response to strip it (via `route.fetch()` + `route.fulfill()`)
+ * turns out to be its own hazard: on at least one real dev server, doing
+ * that at all — even leaving every header untouched — silently broke
+ * hydration (the page rendered fine but every click handler went dead, no
+ * error anywhere). So this is applied reactively, per-origin, only once a
+ * navigation actually gets blocked — never as a blanket default.
+ */
+const framingBypassOrigins = new Set<string>();
+
+async function ensureFramingBypass(page: Page, origin: string): Promise<void> {
+  if (framingBypassOrigins.has(origin)) return;
+  framingBypassOrigins.add(origin);
+  await page.context().route(`${origin}/**`, async (route) => {
+    if (route.request().resourceType() !== "document") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const headers = { ...response.headers() };
+    delete headers["x-frame-options"];
+    delete headers["content-security-policy"];
+    delete headers["content-encoding"];
+    delete headers["content-length"];
+    await route.fulfill({ response, headers });
+  });
+}
+
+/**
+ * Points the site iframe at `url` and waits for it to actually land — the
+ * live `framenavigated` listener set up in recordScript keeps the mockup
+ * address bar's text in sync automatically the instant that happens, so
+ * there's no manual bookkeeping needed here. If the navigation gets
+ * silently blocked by a framing header, retries once with that origin's
+ * requests routed through `ensureFramingBypass`.
+ */
+async function navigateSiteFrame(page: Page, siteFrame: Frame, url: string): Promise<void> {
+  const navigated = page
+    .waitForEvent("framenavigated", { predicate: (f) => f === siteFrame, timeout: 5000 })
+    .catch(() => null);
+  await setSiteFrameSrc(page, url);
+  await navigated;
+  await siteFrame.waitForLoadState("load").catch(() => {});
+
+  const origin = new URL(url).origin;
+  if (!siteFrame.url().startsWith(origin)) {
+    await ensureFramingBypass(page, origin);
+    const retried = page
+      .waitForEvent("framenavigated", { predicate: (f) => f === siteFrame, timeout: 5000 })
+      .catch(() => null);
+    await setSiteFrameSrc(page, url);
+    await retried;
+    await siteFrame.waitForLoadState("load").catch(() => {});
+  }
+}
+
+async function runAction(
+  page: Page,
+  siteFrame: Frame,
+  siteRoot: LocatorRoot,
+  action: Action,
+  cursorAt: Point | null,
+): Promise<void> {
   switch (action.type) {
     case "goto": {
-      await showLoadingBar(page);
-      await page.waitForTimeout(LOADING_BAR_MS);
-      await page.goto(action.url, { waitUntil: "load" });
-      await hideLoadingBar(page);
+      // A `goto` step means the user is typing a URL by hand — animate that
+      // for real in the mockup bar, then actually navigate the iframe.
+      await typeUrlBarText(page, action.url);
+      await page.waitForTimeout(URL_TYPE_ENTER_PAUSE_MS);
+      await navigateSiteFrame(page, siteFrame, action.url);
       break;
     }
     case "click": {
       if (cursorAt) await showClickRipple(page, cursorAt);
       // Some links open in a new tab (target="_blank") — that would escape
       // the single continuous recording. Catch the popup, if any, and fold
-      // it back into the current page instead of leaving it in a new tab.
-      const popupPromise = page.context().waitForEvent("page", { timeout: 1500 }).catch(() => null);
-      await resolveLocator(page, action)!.click();
+      // it back into the site iframe instead of leaving it in a new tab.
+      const popupPromise = page
+        .context()
+        .waitForEvent("page", { timeout: 1500 })
+        .catch(() => null);
+      await resolveLocator(siteRoot, action)!.click();
       const popup = await popupPromise;
       if (popup) {
         await popup.waitForLoadState("load").catch(() => {});
         const popupUrl = popup.url();
         await popup.close();
-        await showLoadingBar(page);
-        await page.goto(popupUrl, { waitUntil: "load" });
-        await hideLoadingBar(page);
+        await navigateSiteFrame(page, siteFrame, popupUrl);
       }
       break;
     }
     case "type":
       if (cursorAt) await showClickRipple(page, cursorAt);
-      await resolveLocator(page, action)!.pressSequentially(action.value, {
+      await resolveLocator(siteRoot, action)!.pressSequentially(action.value, {
         delay: action.typeDelayMs,
       });
       break;
@@ -559,17 +544,17 @@ async function runAction(page: Page, action: Action, cursorAt: Point | null): Pr
       await page.keyboard.press(action.key);
       break;
     case "hover":
-      await resolveLocator(page, action)!.hover();
+      await resolveLocator(siteRoot, action)!.hover();
       break;
     case "scroll": {
-      const locator = resolveLocator(page, action);
+      const locator = resolveLocator(siteRoot, action);
       if (locator) {
         await locator.evaluate((el) => {
           el.scrollIntoView({ behavior: "smooth", block: "center" });
         });
         await page.waitForTimeout(SCROLL_ANIMATION_MS);
       } else {
-        await smoothScrollBy(page, action.y ?? 400);
+        await smoothScrollBy(siteFrame, action.y ?? 400);
       }
       break;
     }
@@ -577,7 +562,14 @@ async function runAction(page: Page, action: Action, cursorAt: Point | null): Pr
       await page.waitForTimeout(action.ms);
       break;
     case "waitForSelector":
-      await resolveLocator(page, action)!.waitFor();
+      await resolveLocator(siteRoot, action)!.waitFor();
+      break;
+    case "upload":
+      // No real OS file-picker dialog opens (Playwright can't drive those) —
+      // this sets the target <input type="file">'s files directly, which
+      // fires the same `change` event the page's own upload handler expects.
+      if (cursorAt) await showClickRipple(page, cursorAt);
+      await resolveLocator(siteRoot, action)!.setInputFiles(expandHome(action.filePath));
       break;
   }
 
@@ -590,6 +582,14 @@ async function runAction(page: Page, action: Action, cursorAt: Point | null): Pr
  * Runs the whole script in a single continuous browser session so the
  * output is one uninterrupted screen recording (state like login/cookies
  * carries naturally from step to step, exactly like a human demoing it).
+ *
+ * The recorded page is *our own* wrapper document (mockup chrome bar +
+ * `#site-frame` iframe) — the target site always runs inside the iframe,
+ * never directly in the recorded page. `position: fixed` (or sticky, or
+ * transformed-ancestor tricks) inside an iframe is always scoped to that
+ * iframe's own viewport per the CSS spec, so nothing the target site does
+ * can ever collide with the chrome bar. That's what keeps this generic
+ * across arbitrary sites without scanning/patching any of their DOM.
  */
 export async function recordScript(
   script: TutorialScript,
@@ -607,12 +607,35 @@ export async function recordScript(
   const context = await browser.newContext({
     viewport: recordingViewport,
     recordVideo: { dir: outputDir, size: recordingViewport },
+    storageState: script.auth?.storageState,
   });
+  await applyAuth(context, script.auth);
   const page = await context.newPage();
+  await page.setContent(buildWrapperHtml(script.viewport.width, script.viewport.height));
+
+  const siteFrameHandle = await page.$(SITE_FRAME_SELECTOR);
+  const siteFrame = await siteFrameHandle!.contentFrame();
+  if (!siteFrame) {
+    throw new Error("Không lấy được frame của #site-frame — trình duyệt có thể chưa render kịp.");
+  }
+  const siteRoot: LocatorRoot = page.frameLocator(SITE_FRAME_SELECTOR);
+
+  // The mockup address bar tracks the iframe's real URL live — any
+  // navigation (our own typed `goto`, a plain link click, an in-app
+  // redirect) updates it the instant it actually happens, with zero
+  // per-step timing bookkeeping. A quick loading-bar sweep rides along on
+  // the same event, so any URL change gets the same "page is loading" cue
+  // a real browser gives, purely decorative.
+  page.on("framenavigated", (frame) => {
+    if (frame === siteFrame) {
+      setUrlBarText(page, frame.url()).catch(() => {});
+      triggerLoadingBar(page).catch(() => {});
+    }
+  });
 
   const startedAt = Date.now();
   const steps: StepTiming[] = [];
-  let cursorPos: Point = { x: script.viewport.width / 2, y: script.viewport.height / 2 };
+  let cursorPos: Point = { x: script.viewport.width / 2, y: script.viewport.height / 2 + CHROME_HEIGHT };
 
   for (let i = 0; i < script.steps.length; i++) {
     const step = script.steps[i];
@@ -623,14 +646,9 @@ export async function recordScript(
       startMs: Date.now() - startedAt,
     });
 
-    // Re-injected every step (idempotent) since a full page navigation wipes
-    // the previous step's DOM additions, including this bar.
-    const urlAtStepStart = page.url();
-    await ensureBrowserChrome(page, urlAtStepStart);
-
     const targetLocator = step.highlightSelector
-      ? page.locator(step.highlightSelector)
-      : resolveLocator(page, step.action);
+      ? siteRoot.locator(step.highlightSelector)
+      : resolveLocator(siteRoot, step.action);
     let cursorAt: Point | null = null;
     let zoomTarget: Point | null = null;
 
@@ -668,27 +686,11 @@ export async function recordScript(
       await clearHighlight(page);
     }
 
-    // A `goto` step means the user is typing a URL by hand — show that
-    // typing on the *current* page before the navigation replaces it. A
-    // click that happens to redirect is different (the app decided that,
-    // not the user), so it only gets the pulse below, not typed text.
-    if (step.action.type === "goto") {
-      cursorPos = await typeUrlIntoAddressBar(page, step.action.url, cursorPos);
-    }
-
-    await runAction(page, step.action, cursorAt);
+    await runAction(page, siteFrame, siteRoot, step.action, cursorAt);
 
     if (zoomTarget) {
       // Zoom back out to reveal the full result, not just the close-up crop.
       await setZoom(page, 1, null);
-    }
-
-    // The action may have navigated (goto, or a click that routes elsewhere)
-    // — re-sync the chrome and, for an in-app redirect only, pulse to draw
-    // attention to the URL that just changed on its own.
-    await ensureBrowserChrome(page, page.url());
-    if (page.url() !== urlAtStepStart && step.action.type !== "goto") {
-      await pulseAddressBar(page);
     }
 
     // Always give viewers time to see the *result* of the action before the

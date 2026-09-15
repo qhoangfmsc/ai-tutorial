@@ -38,7 +38,10 @@ export interface AssembleOptions {
 
 /**
  * Burns per-step captions onto the raw screen recording and mixes each
- * step's narration audio in at the moment that step starts.
+ * step's narration audio in at the moment that step starts. The browser
+ * mockup (chrome bar, URL text, typing animation) is no longer composited
+ * here — it's real HTML rendered live inside the recording itself (see
+ * `buildWrapperHtml` in actor.ts), so there's nothing left to draw on top.
  */
 export async function assembleMainVideo(
   recording: RecordingResult,
@@ -49,7 +52,7 @@ export async function assembleMainVideo(
   const fontPath = escapeFontPath(options.fontPath ?? DEFAULT_FONT);
   const fontSize = options.fontSize ?? 32;
 
-  const drawtextFilters = recording.steps
+  const captionFilters = recording.steps
     .map((step, i) => {
       if (!step.caption) return null;
       const startSec = (step.startMs / 1000).toFixed(3);
@@ -74,10 +77,11 @@ export async function assembleMainVideo(
     args.push("-i", audio.path);
   }
 
-  const videoLabel = drawtextFilters.length > 0 ? "[vout]" : "[0:v]";
   const filterParts: string[] = [];
-  if (drawtextFilters.length > 0) {
-    filterParts.push(`[0:v]${drawtextFilters.join(",")}${videoLabel}`);
+
+  const videoLabel = captionFilters.length > 0 ? "[vout]" : "[0:v]";
+  if (captionFilters.length > 0) {
+    filterParts.push(`[0:v]${captionFilters.join(",")}[vout]`);
   }
 
   const delayedLabels = recording.steps.map((step, i) => {

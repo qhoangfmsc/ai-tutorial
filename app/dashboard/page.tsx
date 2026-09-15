@@ -1,16 +1,31 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function Dashboard() {
   const router = useRouter();
   const [isModalOpen, setModalOpen] = useState(false);
+  const [userName, setUserName] = useState<string | null>(null);
+
+  useEffect(() => {
+    setUserName(localStorage.getItem("demo_user_name"));
+  }, []);
 
   return (
     <div className="flex flex-1 flex-col bg-zinc-50 font-sans dark:bg-black">
-      <header className="border-b border-black/[.08] bg-white px-8 py-4 dark:border-white/[.1] dark:bg-black">
+      <header className="flex items-center justify-between border-b border-black/[.08] bg-white px-8 py-4 dark:border-white/[.1] dark:bg-black">
         <span className="text-lg font-semibold tracking-tight">Demo Tutorial</span>
+        {userName ? (
+          <span
+            data-tutorial="logged-in-badge"
+            className="rounded-full bg-green-50 px-3 py-1 text-xs font-medium text-green-700 dark:bg-green-950 dark:text-green-300"
+          >
+            Xin chào, {userName}
+          </span>
+        ) : (
+          <span className="text-xs text-zinc-400">Chưa đăng nhập</span>
+        )}
       </header>
 
       <main className="mx-auto w-full max-w-4xl flex-1 px-8 py-12">
@@ -53,8 +68,7 @@ export default function Dashboard() {
           >
             <h3 className="text-lg font-semibold">Tạo dự án mới</h3>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              Bạn sẽ được chuyển sang bước thiết lập thông tin dự án ở trang tiếp
-              theo.
+              Bạn sẽ được chuyển sang bước thiết lập thông tin dự án ở trang tiếp theo.
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button

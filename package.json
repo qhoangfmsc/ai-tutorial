@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "generate": "tsx pipeline/src/generate.ts"
+    "generate": "tsx pipeline/src/generate.ts",
+    "capture-auth": "tsx pipeline/src/capture-auth.ts",
+    "format": "prettier --ignore-path .prettierignore --write ."
   },
   "dependencies": {
     "next": "16.3.4",
@@ -23,6 +25,7 @@
     "eslint-config-next": "16.3.4",
     "js-yaml": "^5.4.1",
     "playwright": "^1.63.0",
+    "prettier": "^3.9.6",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
     "typescript": "^5",

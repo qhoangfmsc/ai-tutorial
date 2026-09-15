@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 import type { Action, TutorialScript } from "./schema";
-import { resolveLocator } from "./actor";
+import { resolveLocator, expandHome } from "./actor";
+import { applyAuth } from "./auth";
 
 const TARGET_TIMEOUT_MS = 5000;
 
@@ -24,7 +25,11 @@ function describeTarget(action: Action): string {
  */
 export async function validateScript(script: TutorialScript): Promise<void> {
   const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: script.viewport });
+  const context = await browser.newContext({
+    viewport: script.viewport,
+    storageState: script.auth?.storageState,
+  });
+  await applyAuth(context, script.auth);
   const page = await context.newPage();
 
   try {
@@ -48,7 +53,10 @@ export async function validateScript(script: TutorialScript): Promise<void> {
           case "click": {
             // Mirror actor.ts: a target="_blank" link would otherwise open a
             // popup the rest of the script never sees, breaking validation.
-            const popupPromise = page.context().waitForEvent("page", { timeout: 1500 }).catch(() => null);
+            const popupPromise = page
+              .context()
+              .waitForEvent("page", { timeout: 1500 })
+              .catch(() => null);
             await resolveLocator(page, action)!.click();
             const popup = await popupPromise;
             if (popup) {
@@ -81,6 +89,9 @@ export async function validateScript(script: TutorialScript): Promise<void> {
             break; // no need to actually sleep during validation
           case "waitForSelector":
             break; // already waited for above
+          case "upload":
+            await resolveLocator(page, action)!.setInputFiles(expandHome(action.filePath));
+            break;
         }
       } catch (err) {
         const target = describeTarget(action);

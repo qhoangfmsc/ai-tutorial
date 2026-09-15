@@ -1,0 +1,4 @@
+node_modules
+.next
+pipeline/projects/*/process
+pipeline/projects/*/*.mp4

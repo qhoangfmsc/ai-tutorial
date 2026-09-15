@@ -1,0 +1,54 @@
+title: "Hướng dẫn đổi avatar trên Workplace"
+viewport:
+  width: 1280
+  height: 720
+voice: "Linh"
+
+intro:
+  heading: "Workplace"
+  subheading: "Hướng dẫn đổi ảnh đại diện"
+  narration: "Chào bạn! Trong video này, tôi sẽ hướng dẫn bạn cách đổi ảnh đại diện trên Workplace."
+  durationMs: 2000
+
+outro:
+  heading: "Workplace"
+  subheading: "Cảm ơn bạn đã theo dõi!"
+  narration: "Vậy là xong! Cảm ơn bạn đã theo dõi hướng dẫn."
+  durationMs: 2000
+
+auth:
+  storageState: "auth.json"
+
+steps:
+  - narration: "Vào trang Workplace, đã đăng nhập sẵn nhờ session lưu trước đó."
+    caption: "Trang chủ Workplace"
+    action:
+      type: goto
+      url: "https://workplace.vietnix.vn/"
+
+  - narration: "Đưa chuột vào avatar người dùng trên thanh điều hướng."
+    caption: "Mở menu tài khoản"
+    action:
+      type: hover
+      selector: "[aria-haspopup='list'][role='button']:has(.el-avatar.el-avatar--circle)"
+
+  - narration: "Chọn 'Chỉnh sửa hồ sơ' trong menu vừa mở."
+    caption: "Chọn 'Chỉnh sửa hồ sơ'"
+    action:
+      type: click
+      find:
+        text: "Chỉnh sửa hồ sơ"
+
+  - narration: "Nhấn vào biểu tượng bút chì trên ảnh đại diện, chọn ảnh mong muốn và bắt đầu cập nhật."
+    caption: "Đổi ảnh đại diện"
+    highlightSelector: "label[for='input-avatar']"
+    action:
+      type: upload
+      selector: "#input-avatar"
+      filePath: "~/Downloads/1.jpg"
+
+  - narration: "Vậy là hoàn thành việc upload ảnh đại diện mới."
+    caption: "Hoàn thành upload"
+    action:
+      type: wait
+      ms: 800

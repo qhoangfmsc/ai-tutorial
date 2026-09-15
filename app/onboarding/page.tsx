@@ -37,9 +37,7 @@ export default function Onboarding() {
       </header>
 
       <main className="mx-auto w-full max-w-lg flex-1 px-8 py-12">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Thiết lập thông tin dự án
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Thiết lập thông tin dự án</h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           Điền các thông tin bên dưới để hoàn tất khởi tạo dự án.
         </p>
@@ -151,11 +149,10 @@ export default function Onboarding() {
             </div>
 
             <div className="rounded-lg border border-black/[.1] bg-white p-4 text-xs leading-relaxed text-zinc-500 dark:border-white/[.15] dark:bg-zinc-900 dark:text-zinc-400">
-              Bằng việc tạo dự án, bạn đồng ý rằng thông tin cung cấp là chính
-              xác và cho phép Demo Tutorial lưu trữ dữ liệu này để phục vụ
-              việc quản lý dự án. Dữ liệu có thể được chia sẻ nội bộ với các
-              thành viên bạn chọn ở trên. Bạn có thể chỉnh sửa hoặc xoá dự án
-              bất kỳ lúc nào trong phần cài đặt.
+              Bằng việc tạo dự án, bạn đồng ý rằng thông tin cung cấp là chính xác và cho phép Demo
+              Tutorial lưu trữ dữ liệu này để phục vụ việc quản lý dự án. Dữ liệu có thể được chia
+              sẻ nội bộ với các thành viên bạn chọn ở trên. Bạn có thể chỉnh sửa hoặc xoá dự án bất
+              kỳ lúc nào trong phần cài đặt.
             </div>
 
             <label className="flex items-center gap-2 text-sm">

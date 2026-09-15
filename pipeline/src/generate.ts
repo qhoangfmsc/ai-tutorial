@@ -1,5 +1,5 @@
-import { join, basename, extname } from "node:path";
-import { mkdirSync } from "node:fs";
+import { join, isAbsolute } from "node:path";
+import { mkdirSync, existsSync } from "node:fs";
 import { parseScript } from "./parser";
 import { recordScript, CHROME_HEIGHT } from "./actor";
 import { assembleMainVideo, buildBrandClip, concatClips, padVideoEnd } from "./assemble";
@@ -8,17 +8,40 @@ import { validateScript } from "./validate";
 
 const NARRATION_BUFFER_MS = 300;
 
+/**
+ * Each tutorial is a self-contained folder under pipeline/projects/<name>/:
+ *   script.yaml   — the tutorial script (required)
+ *   auth.json     — optional storageState (cookies/localStorage), gitignored
+ *   final.mp4     — the one file that actually matters, right next to the script
+ *   process/      — every intermediate/working file, gitignored
+ * Keeping all of this together is what makes "which folder has the X demo?"
+ * a one-hop question instead of a three-directory hunt.
+ */
 async function main() {
-  const scriptPath = process.argv[2];
-  if (!scriptPath) {
-    console.error("Cách dùng: tsx pipeline/src/generate.ts <script.yaml>");
+  const projectName = process.argv[2];
+  if (!projectName) {
+    console.error("Cách dùng: tsx pipeline/src/generate.ts <tên-project>");
+    console.error("  (project phải nằm ở pipeline/projects/<tên-project>/script.yaml)");
+    process.exit(1);
+  }
+
+  const projectDir = join("pipeline", "projects", projectName);
+  const scriptPath = join(projectDir, "script.yaml");
+  if (!existsSync(scriptPath)) {
+    console.error(`✘ Không tìm thấy ${scriptPath}`);
     process.exit(1);
   }
 
   const script = parseScript(scriptPath);
-  const name = basename(scriptPath, extname(scriptPath));
-  const outputDir = join("pipeline", "output", name);
-  const audioDir = join(outputDir, "audio");
+
+  // `auth.storageState` in the YAML is relative to the project folder, so
+  // a project stays self-contained and movable as one unit.
+  if (script.auth?.storageState && !isAbsolute(script.auth.storageState)) {
+    script.auth.storageState = join(projectDir, script.auth.storageState);
+  }
+
+  const processDir = join(projectDir, "process");
+  const audioDir = join(processDir, "audio");
   mkdirSync(audioDir, { recursive: true });
 
   console.log("▶ Kiểm tra kịch bản (dry-run, chưa quay hình)...");
@@ -47,20 +70,20 @@ async function main() {
   );
 
   console.log(`▶ Đang thực thi kịch bản "${script.title}" (${script.steps.length} bước)...`);
-  const recording = await recordScript(script, outputDir, stepDurationsMs);
+  const recording = await recordScript(script, processDir, stepDurationsMs);
   console.log(
     `✔ Ghi hình xong: ${recording.videoPath} (${(recording.totalDurationMs / 1000).toFixed(1)}s)`,
   );
 
   console.log("▶ Đang dựng video chính (caption + giọng đọc)...");
-  const mainClipPath = join(outputDir, "main.mp4");
+  const mainClipPath = join(processDir, "main.mp4");
   await assembleMainVideo(recording, stepAudio, mainClipPath);
 
   const clips: string[] = [];
 
   if (script.intro) {
     console.log("▶ Đang dựng màn hình chào mở đầu...");
-    const introPath = join(outputDir, "intro.mp4");
+    const introPath = join(processDir, "intro.mp4");
     await buildBrandClip(script.intro, introAudio, introPath, {
       width: script.viewport.width,
       height: script.viewport.height + CHROME_HEIGHT,
@@ -72,7 +95,7 @@ async function main() {
     // A real pause on the last frame, not just a longer crossfade — keeps
     // the outro's narration from starting while the last step's is still
     // trailing off.
-    const paddedMainPath = join(outputDir, "main-padded.mp4");
+    const paddedMainPath = join(processDir, "main-padded.mp4");
     await padVideoEnd(mainClipPath, script.outroGapMs, paddedMainPath);
     clips.push(paddedMainPath);
   } else {
@@ -81,7 +104,7 @@ async function main() {
 
   if (script.outro) {
     console.log("▶ Đang dựng màn hình cảm ơn kết thúc...");
-    const outroPath = join(outputDir, "outro.mp4");
+    const outroPath = join(processDir, "outro.mp4");
     await buildBrandClip(script.outro, outroAudio, outroPath, {
       width: script.viewport.width,
       height: script.viewport.height + CHROME_HEIGHT,
@@ -89,7 +112,7 @@ async function main() {
     clips.push(outroPath);
   }
 
-  const finalPath = join(outputDir, "final.mp4");
+  const finalPath = join(projectDir, "final.mp4");
   console.log("▶ Đang ghép các đoạn lại thành video hoàn chỉnh...");
   await concatClips(clips, finalPath);
 

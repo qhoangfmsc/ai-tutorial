@@ -40,5 +40,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# pipeline generated video output
-/pipeline/output/
+# pipeline: intermediate/working files for each tutorial
+/pipeline/projects/*/process/
+# pipeline: the finished video (still generated, still large — un-ignore per project if you want one tracked)
+/pipeline/projects/*/final.mp4
+
+# pipeline: saved login sessions (cookies/localStorage) — never commit these
+/pipeline/projects/*/auth.json

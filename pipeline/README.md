@@ -5,31 +5,49 @@ action đã khai báo** (không tự suy luận thao tác), quay màn hình liê
 bằng Playwright, khoanh vùng (highlight) mục tiêu, đọc narration bằng TTS,
 rồi dựng thành video hoàn chỉnh bằng ffmpeg.
 
+## Mỗi tutorial là 1 project tự chứa
+
+```
+pipeline/projects/<tên-project>/
+├── script.yaml   ← kịch bản (bắt buộc)
+├── auth.json     ← session đã đăng nhập, nếu cần (tuỳ chọn, gitignored)
+├── final.mp4     ← video hoàn chỉnh — thứ duy nhất bạn thực sự cần
+└── process/      ← toàn bộ file trung gian (audio, raw recording, các clip
+                    lẻ trước khi ghép) — gitignored, chỉ để debug khi cần
+```
+
+Muốn xem/sửa 1 demo nào, chỉ cần mở đúng 1 thư mục — không cần lục 3 chỗ
+khác nhau. Muốn xem kết quả thì chỉ cần đúng 1 file `final.mp4` ngay đó,
+không phải chui vào thư mục con nào. Tạo project mới bằng cách copy 1 thư
+mục có sẵn (vd `pipeline/projects/onboarding-flow`) sang tên mới, sửa
+`script.yaml`.
+
 ## Chạy thử
 
 ```bash
-yarn generate pipeline/examples/onboarding-flow.yaml
+yarn generate onboarding-flow
 ```
 
-Kết quả nằm ở `pipeline/output/<tên-file-script>/final.mp4`. Cần Next.js
-dev server đang chạy (`yarn dev`) nếu kịch bản trỏ vào `localhost:3000`.
+(tên project, không phải đường dẫn file). Kết quả nằm ở
+`pipeline/projects/onboarding-flow/final.mp4`. Cần Next.js dev server
+đang chạy (`yarn dev`) nếu kịch bản trỏ vào `localhost:3000`.
 
 ## Cấu trúc kịch bản
 
-Xem `pipeline/examples/onboarding-flow.yaml`. Ở cấp script:
+Xem `pipeline/projects/onboarding-flow/script.yaml`. Ở cấp script:
 
 - `title`, `viewport` (mặc định 1280×720).
 - `voice` / `voiceRate`: giọng và tốc độ đọc cho macOS `say` (mặc định
   `Linh`, 130 wpm).
-- `intro` / `outro` *(tuỳ chọn)*: màn hình thương hiệu đầu/cuối —
+- `intro` / `outro` _(tuỳ chọn)_: màn hình thương hiệu đầu/cuối —
   `heading`, `subheading`, `narration`, `durationMs`.
 - `steps`: danh sách bước, mỗi step gồm:
   - `narration`: câu sẽ được đọc bằng TTS.
-  - `caption` *(tuỳ chọn)*: chữ hiển thị trên clip trong lúc step diễn ra.
+  - `caption` _(tuỳ chọn)_: chữ hiển thị trên clip trong lúc step diễn ra.
   - `action`: thao tác Playwright — `goto`, `click`, `type`, `press`,
     `hover`, `scroll`, `wait`, `waitForSelector`. Xem `src/schema.ts` để
     biết đầy đủ tham số từng loại.
-  - `highlightSelector` *(tuỳ chọn)*: mặc định lấy theo selector của
+  - `highlightSelector` _(tuỳ chọn)_: mặc định lấy theo selector của
     action; khoanh khung đỏ quanh phần tử này.
   - `minDurationMs`: thời gian tối thiểu step hiển thị (mặc định 1500ms).
 
@@ -60,6 +78,75 @@ người thật demo — và tránh việc ghép nhiều đoạn quay không kh�
 3. Thao tác (click/type/...) thực thi trên màn hình sạch.
 4. Giữ kết quả tối thiểu 1.5s (hoặc lâu hơn nếu narration còn dài) trước khi
    sang step kế tiếp.
+
+## Demo app cần đăng nhập sẵn
+
+Nếu app cần login trước khi demo, đừng gõ tài khoản/mật khẩu thật trong
+kịch bản. Thay vào đó, lưu session (cookie + localStorage) ra file
+`auth.json` **ngay trong thư mục project đó** (đã có trong `.gitignore`):
+
+```bash
+yarn capture-auth https://app.example.com/login pipeline/projects/<tên-project>/auth.json
+```
+
+Lệnh trên mở 1 trình duyệt thật — đăng nhập thủ công, xong quay lại
+terminal nhấn Enter để lưu session. Sau đó khai báo trong `script.yaml`
+của project (đường dẫn tính từ thư mục project, nên chỉ cần tên file):
+
+```yaml
+auth:
+  storageState: "auth.json"
+```
+
+Từ giờ mỗi lần `yarn generate` chạy, trình duyệt sẽ khởi động **đã đăng
+nhập sẵn** — không cần quay lại bước login mỗi lần, và không có thông tin
+nhạy cảm nào nằm trong file kịch bản có thể commit lên git.
+
+### 3 cách khai `auth`, dùng riêng hoặc kết hợp
+
+Không phải app nào cũng cần đủ cả cookie lẫn localStorage — chọn đúng cái
+app bạn demo thực sự cần:
+
+- **`storageState`** _(khuyên dùng)_: snapshot đầy đủ cookie + localStorage,
+  lấy từ `yarn capture-auth`. Phù hợp khi không chắc app cần gì, cứ đăng
+  nhập tay 1 lần là có đủ.
+- **`cookies`**: khai trực tiếp trong YAML, cho app chỉ cần 1-2 session
+  cookie đơn giản (không cần chạy `capture-auth`):
+  ```yaml
+  auth:
+    cookies:
+      - name: "session_id"
+        value: "abc123"
+        domain: "app.example.com"
+  ```
+- **`localStorage`**: cho app không dùng cookie mà lưu token trong
+  `localStorage` (phổ biến với SPA dùng JWT):
+  ```yaml
+  auth:
+    localStorage:
+      - origin: "https://app.example.com"
+        items:
+          auth_token: "eyJhbGciOi..."
+          user_id: "42"
+  ```
+
+Cả 3 field trong `auth` độc lập nhau — khai bao nhiêu cũng được, không bắt
+buộc chọn 1. Giá trị nhạy cảm gõ trực tiếp trong YAML thì tự chịu trách
+nhiệm không commit file đó lên git (dùng `storageState` sẽ an toàn hơn vì
+dữ liệu nằm ở file riêng, không lẫn vào kịch bản).
+
+## Nhắm mục tiêu: `selector` hay `find`
+
+Mỗi action cần chọn phần tử (`click`, `type`, `hover`, `waitForSelector`)
+dùng đúng 1 trong 2 cách:
+
+- `selector`: CSS selector thường (id/class/attribute) — cần bạn kiểm soát
+  được HTML.
+- `find: { text, role?, near?, frame? }`: mô tả bằng văn bản hiển thị/accessible
+  name — dùng được trên **bất kỳ trang nào**, kể cả trang bạn không kiểm
+  soát HTML. `near` khoanh vùng tìm trong đúng khu vực khi có nhiều phần tử
+  trùng tên; `frame` trỏ vào 1 `<iframe>` (kể cả khác domain) nếu mục tiêu
+  nằm trong đó.
 
 ## Yêu cầu hệ thống
 

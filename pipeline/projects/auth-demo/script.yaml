@@ -1,0 +1,36 @@
+title: "Demo: vào thẳng trang quản lý nhờ session đã lưu sẵn"
+viewport:
+  width: 1280
+  height: 720
+voice: "Linh"
+
+auth:
+  storageState: "auth.json"
+
+intro:
+  heading: "Demo Auth"
+  subheading: "Đăng nhập sẵn nhờ storageState"
+  narration: "Xin chào! Đây là demo vào thẳng trang quản lý nhờ session đã lưu sẵn."
+  durationMs: 2000
+
+outro:
+  heading: "Hoàn tất"
+  subheading: "Cảm ơn bạn đã theo dõi!"
+  narration: "Cảm ơn bạn đã theo dõi!"
+  durationMs: 2000
+
+steps:
+  - narration: "Truy cập thẳng vào trang quản lý, không cần qua bước đăng nhập."
+    caption: "Vào /dashboard trực tiếp"
+    action:
+      type: goto
+      url: "http://localhost:3000/dashboard"
+
+  - narration: "Thấy ngay huy hiệu đã đăng nhập, nhờ session được nạp sẵn từ file cấu hình."
+    caption: "Đã đăng nhập sẵn"
+    minDurationMs: 2500
+    zoom:
+      level: 1.8
+    action:
+      type: waitForSelector
+      selector: "[data-tutorial='logged-in-badge']"
