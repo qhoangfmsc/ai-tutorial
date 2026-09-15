@@ -2,7 +2,7 @@ import { join, isAbsolute } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { parseScript } from "./parser";
 import { recordScript, CHROME_HEIGHT } from "./actor";
-import { assembleMainVideo, buildBrandClip, concatClips, padVideoEnd } from "./assemble";
+import { assembleMainVideo, buildBrandClip, concatClips } from "./assemble";
 import { synthesize, type TtsResult } from "./tts";
 import { validateScript } from "./validate";
 
@@ -67,42 +67,32 @@ async function main() {
     `✔ Ghi hình xong: ${recording.videoPath} (${(recording.totalDurationMs / 1000).toFixed(1)}s)`,
   );
 
-  console.log("▶ Đang dựng video chính (caption + giọng đọc)...");
+  console.log("▶ Đang dựng video chính, màn hình chào/kết thúc...");
   const mainClipPath = join(processDir, "main.mp4");
-  await assembleMainVideo(recording, stepAudio, mainClipPath);
+  const introPath = join(processDir, "intro.mp4");
+  const outroPath = join(processDir, "outro.mp4");
+  const brandClipSize = {
+    width: script.viewport.width,
+    height: script.viewport.height + CHROME_HEIGHT,
+  };
+
+  // None of these three clips depend on each other's output — building
+  // them concurrently instead of one-by-one overlaps their ffmpeg passes
+  // instead of paying for each in sequence. The main clip's own encode
+  // absorbs the outro's lead-in pause directly (`trailingHoldMs`) rather
+  // than a separate full-clip re-encode pass just to add a few hundred ms.
+  await Promise.all([
+    assembleMainVideo(recording, stepAudio, mainClipPath, {
+      trailingHoldMs: script.outro ? script.outroGapMs : 0,
+    }),
+    script.intro ? buildBrandClip(script.intro, introAudio, introPath, brandClipSize) : null,
+    script.outro ? buildBrandClip(script.outro, outroAudio, outroPath, brandClipSize) : null,
+  ]);
 
   const clips: string[] = [];
-
-  if (script.intro) {
-    console.log("▶ Đang dựng màn hình chào mở đầu...");
-    const introPath = join(processDir, "intro.mp4");
-    await buildBrandClip(script.intro, introAudio, introPath, {
-      width: script.viewport.width,
-      height: script.viewport.height + CHROME_HEIGHT,
-    });
-    clips.push(introPath);
-  }
-
-  if (script.outro && script.outroGapMs > 0) {
-    // A real pause on the last frame, not just a longer crossfade — keeps
-    // the outro's narration from starting while the last step's is still
-    // trailing off.
-    const paddedMainPath = join(processDir, "main-padded.mp4");
-    await padVideoEnd(mainClipPath, script.outroGapMs, paddedMainPath);
-    clips.push(paddedMainPath);
-  } else {
-    clips.push(mainClipPath);
-  }
-
-  if (script.outro) {
-    console.log("▶ Đang dựng màn hình cảm ơn kết thúc...");
-    const outroPath = join(processDir, "outro.mp4");
-    await buildBrandClip(script.outro, outroAudio, outroPath, {
-      width: script.viewport.width,
-      height: script.viewport.height + CHROME_HEIGHT,
-    });
-    clips.push(outroPath);
-  }
+  if (script.intro) clips.push(introPath);
+  clips.push(mainClipPath);
+  if (script.outro) clips.push(outroPath);
 
   const finalPath = join(projectDir, "final.mp4");
   console.log("▶ Đang ghép các đoạn lại thành video hoàn chỉnh...");

@@ -34,6 +34,14 @@ function escapeFontPath(value: string): string {
 export interface AssembleOptions {
   fontPath?: string;
   fontSize?: number;
+  /**
+   * Extra time (ms) to hold the last frame + silence past the recording's
+   * own end — for the gap before an outro. Folded into this same encode
+   * pass (a `tpad`/longer `-t`) instead of a separate full-clip re-encode
+   * afterward, which is all a dedicated "pad the end" pass would otherwise
+   * cost for a few hundred ms of held frame.
+   */
+  trailingHoldMs?: number;
 }
 
 /**
@@ -51,6 +59,7 @@ export async function assembleMainVideo(
 ): Promise<void> {
   const fontPath = escapeFontPath(options.fontPath ?? DEFAULT_FONT);
   const fontSize = options.fontSize ?? 32;
+  const trailingHoldMs = options.trailingHoldMs ?? 0;
 
   const captionFilters = recording.steps
     .map((step, i) => {
@@ -70,7 +79,7 @@ export async function assembleMainVideo(
     })
     .filter((f): f is string => f !== null);
 
-  const totalDurationSec = (recording.totalDurationMs / 1000).toFixed(3);
+  const totalDurationSec = ((recording.totalDurationMs + trailingHoldMs) / 1000).toFixed(3);
 
   const args = ["-y", "-i", recording.videoPath];
   for (const audio of stepAudio) {
@@ -79,9 +88,14 @@ export async function assembleMainVideo(
 
   const filterParts: string[] = [];
 
-  const videoLabel = captionFilters.length > 0 ? "[vout]" : "[0:v]";
+  let videoLabel = captionFilters.length > 0 ? "[vout]" : "[0:v]";
   if (captionFilters.length > 0) {
     filterParts.push(`[0:v]${captionFilters.join(",")}[vout]`);
+  }
+  if (trailingHoldMs > 0) {
+    const holdSec = (trailingHoldMs / 1000).toFixed(3);
+    filterParts.push(`${videoLabel}tpad=stop_mode=clone:stop_duration=${holdSec}[vheld]`);
+    videoLabel = "[vheld]";
   }
 
   const delayedLabels = recording.steps.map((step, i) => {
@@ -90,6 +104,9 @@ export async function assembleMainVideo(
     return label;
   });
   filterParts.push(
+    // Unbounded `apad` (no pad_dur) just keeps feeding silence past the
+    // shortest input — the `-t` below is what actually decides how much of
+    // it (if any, beyond the recording's own length) makes it into the file.
     `${delayedLabels.join("")}amix=inputs=${delayedLabels.length}:duration=longest:dropout_transition=0:normalize=0,apad[aout]`,
   );
 
@@ -179,39 +196,6 @@ export async function buildBrandClip(
   );
 
   await runFfmpeg(args);
-}
-
-/**
- * Holds the clip's last frame with silence for `gapMs` extra time at the
- * end — a real pause, not just a longer crossfade, so the next clip's
- * narration never overlaps this one's tail audio.
- */
-export async function padVideoEnd(
-  inputPath: string,
-  gapMs: number,
-  outputPath: string,
-): Promise<void> {
-  const gapSec = (gapMs / 1000).toFixed(3);
-  await runFfmpeg([
-    "-y",
-    "-i",
-    inputPath,
-    "-vf",
-    `tpad=stop_mode=clone:stop_duration=${gapSec}`,
-    "-af",
-    `apad=pad_dur=${gapSec}`,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-pix_fmt",
-    "yuv420p",
-    "-crf",
-    "20",
-    "-c:a",
-    "aac",
-    outputPath,
-  ]);
 }
 
 async function probeDurationSec(path: string): Promise<number> {

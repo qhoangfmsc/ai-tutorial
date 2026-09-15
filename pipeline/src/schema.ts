@@ -122,9 +122,16 @@ export type BrandScreen = z.infer<typeof BrandScreenSchema>;
 
 export const ScriptSchema = z.object({
   title: z.string().min(1),
+  /**
+   * The *site's* viewport — the final video is this height plus the 44px
+   * chrome bar on top (see CHROME_HEIGHT in actor.ts). Defaults to 676 so
+   * the delivered video lands on a clean 1280x720 (16:9) instead of an odd
+   * height that gets pillarboxed oddly on platforms expecting standard
+   * aspect ratios.
+   */
   viewport: z
     .object({ width: z.number().int().positive(), height: z.number().int().positive() })
-    .default({ width: 1280, height: 720 }),
+    .default({ width: 1280, height: 676 }),
   /** macOS `say` voice name. */
   voice: z.string().default("Linh"),
   /** Speech rate in words-per-minute passed to macOS `say` — lower reads slower/calmer. */
