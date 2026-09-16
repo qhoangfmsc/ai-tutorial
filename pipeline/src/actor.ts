@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { chromium, type Page, type Locator, type FrameLocator, type Frame } from "playwright";
 import type { Action, Find, TutorialScript } from "./schema";
-import { applyAuth } from "./auth";
+import { applyAuth, loadStorageState } from "./auth";
 
 /** Expands a leading `~` to the user's home dir; absolute paths pass through unchanged. */
 export function expandHome(path: string): string {
@@ -27,8 +27,9 @@ export const TIMING = {
    * amount regardless of how short (or long) that sentence is.
    */
   minHighlightSettleMs: 800,
-  /** Cursor glide duration from its previous position to the next target. */
-  cursorMoveMs: 500,
+  /** Floor/ceiling on cursor glide duration — actual time scales with travel distance (see cursorMoveDuration). */
+  cursorMoveMinMs: 220,
+  cursorMoveMaxMs: 650,
   /** Camera zoom in/out transition. */
   zoomTransitionMs: 500,
   /** `scrollIntoView`/manual-scroll animation. */
@@ -301,11 +302,15 @@ async function clearHighlight(page: Page): Promise<void> {
 }
 
 const CURSOR_ID = "__tutorial_cursor__";
+/** Shared with the highlight box so the cursor visually "belongs" to the same focus cue. */
+const ACCENT_COLOR = "255,59,48";
 
 /**
  * A classic arrow-pointer silhouette, tip at (0,0) — matching a real OS
  * cursor's hotspot — so positioning the element's top-left corner at the
- * target point lines the tip up exactly with the click location.
+ * target point lines the tip up exactly with the click location. Sized
+ * slightly above a real OS cursor (20x27 vs. ~16x22) so it's easier to spot
+ * without looking like an artificial overlay.
  */
 const CURSOR_SVG =
   "data:image/svg+xml;utf8," +
@@ -326,12 +331,12 @@ async function ensureCursor(page: Page, pos: Point): Promise<void> {
           el.id = id;
           Object.assign(el.style, {
             position: "fixed",
-            width: "16px",
-            height: "22px",
+            width: "20px",
+            height: "27px",
             backgroundImage: `url("${svg}")`,
             backgroundSize: "contain",
             backgroundRepeat: "no-repeat",
-            filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.5))",
+            filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.5))",
             zIndex: "2147483646",
             pointerEvents: "none",
           });
@@ -347,58 +352,139 @@ async function ensureCursor(page: Page, pos: Point): Promise<void> {
     });
 }
 
-/** Animates the cursor dot from `from` to `to`, frame by frame. */
+/**
+ * How long a cursor glide of `distance` px should take — short hops read as
+ * snappy, long cross-screen jumps take a bit longer but sublinearly
+ * (roughly Fitts's law), capped so a corner-to-corner move never drags the
+ * scene out.
+ */
+function cursorMoveDuration(distance: number): number {
+  const t = Math.min(1, distance / 900);
+  return TIMING.cursorMoveMinMs + (TIMING.cursorMoveMaxMs - TIMING.cursorMoveMinMs) * Math.sqrt(t);
+}
+
+/**
+ * Animates the cursor dot from `from` to `to`, driven by
+ * `requestAnimationFrame` against real elapsed time rather than a fixed
+ * `setTimeout` step schedule — the latter drifts under event-loop load and
+ * reads as micro-stutter on camera, exactly what a "silky" cursor can't
+ * afford. Deliberately not a straight-line lerp either: this bows the path
+ * slightly off the direct line and settles with a touch of overshoot near
+ * arrival, like a real hand — but with no per-frame jitter, since random
+ * noise is itself a form of stutter, not a human cue.
+ */
 async function moveCursorTo(page: Page, from: Point, to: Point, durationMs: number): Promise<void> {
-  const frameCount = 20;
   await page
     .evaluate(
-      async ({ id, from, to, durationMs, frameCount }) => {
+      // An inline async IIFE with a `while` loop, not a named recursive
+      // helper — a named function/arrow bound to an identifier gets wrapped
+      // in a `__name(...)` call by the build step, which breaks once
+      // Playwright serializes this function's source and re-runs it
+      // standalone in the page (the helper it calls doesn't exist there).
+      async ({ id, from, to, durationMs }) => {
         const el = document.getElementById(id) as HTMLDivElement | null;
         if (!el) return;
-        const frameDelay = durationMs / frameCount;
-        for (let i = 1; i <= frameCount; i++) {
-          const t = i / frameCount;
-          const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-          el.style.left = `${from.x + (to.x - from.x) * eased}px`;
-          el.style.top = `${from.y + (to.y - from.y) * eased}px`;
-          await new Promise((r) => setTimeout(r, frameDelay));
+
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const distance = Math.hypot(dx, dy);
+
+        const arcMax = 24;
+        const arc = Math.min(arcMax, distance * 0.1) * (Math.random() < 0.5 ? -1 : 1);
+        const nx = distance > 0 ? -dy / distance : 0;
+        const ny = distance > 0 ? dx / distance : 0;
+        const midX = from.x + dx / 2 + nx * arc;
+        const midY = from.y + dy / 2 + ny * arc;
+
+        const start = performance.now();
+        let t = 0;
+        while (t < 1) {
+          const now = await new Promise<number>((resolve) => requestAnimationFrame(resolve));
+          t = Math.min(1, durationMs > 0 ? (now - start) / durationMs : 1);
+
+          // Gentle easeOutBack: a small overshoot past the target before
+          // settling, softer than a full bounce so it reads as a smooth
+          // arrival rather than a wobble.
+          const c1 = 0.28;
+          const eased = t >= 1 ? 1 : 1 + (c1 + 1) * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+
+          const u = 1 - eased;
+          const x = u * u * from.x + 2 * u * eased * midX + eased * eased * to.x;
+          const y = u * u * from.y + 2 * u * eased * midY + eased * eased * to.y;
+          el.style.left = `${x}px`;
+          el.style.top = `${y}px`;
         }
+
+        el.style.left = `${to.x}px`;
+        el.style.top = `${to.y}px`;
       },
-      { id: CURSOR_ID, from, to, durationMs, frameCount },
+      { id: CURSOR_ID, from, to, durationMs },
     )
     .catch(() => {});
 }
 
-/** A brief expanding ring at `pos` to mark a click. */
+/**
+ * A bold double-ring pulse at `pos` to mark a click, plus an exaggerated
+ * squash-bounce on the cursor icon — deliberately more emphatic than a real
+ * click's feedback would be, so every action reads as obvious at a glance
+ * rather than blending into the recording.
+ */
 async function showClickRipple(page: Page, pos: Point): Promise<void> {
   await page
-    .evaluate(({ x, y }) => {
-      const ripple = document.createElement("div");
-      Object.assign(ripple.style, {
-        position: "fixed",
-        left: `${x}px`,
-        top: `${y}px`,
-        width: "10px",
-        height: "10px",
-        marginLeft: "-5px",
-        marginTop: "-5px",
-        borderRadius: "50%",
-        border: "2px solid rgba(20,20,20,0.6)",
-        zIndex: "2147483645",
-        pointerEvents: "none",
-        transition: "transform 400ms ease-out, opacity 400ms ease-out",
-        transform: "scale(1)",
-        opacity: "1",
-      });
-      document.body.appendChild(ripple);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          ripple.style.transform = "scale(3.5)";
-          ripple.style.opacity = "0";
+    .evaluate(
+      ({ x, y, cursorId, accent }) => {
+        const cursor = document.getElementById(cursorId) as HTMLDivElement | null;
+        if (cursor) {
+          cursor.style.transformOrigin = "0 0";
+          cursor.style.transition = "transform 90ms ease-out";
+          cursor.style.transform = "scale(0.65)";
+          setTimeout(() => {
+            cursor.style.transition = "transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1)";
+            cursor.style.transform = "scale(1.2)";
+            setTimeout(() => {
+              cursor.style.transition = "transform 140ms ease-out";
+              cursor.style.transform = "scale(1)";
+            }, 200);
+          }, 90);
+        }
+
+        // Two concentric rings — a solid inner one and a softer outer one —
+        // read as a much bolder "something just happened here" cue than a
+        // single thin ring, especially at video-compressed bitrates.
+        [
+          { size: 14, border: `3px solid rgba(${accent},0.95)`, scale: 4, duration: 550 },
+          { size: 14, border: `1.5px solid rgba(${accent},0.5)`, scale: 6, duration: 650 },
+        ].forEach(({ size, border, scale, duration }) => {
+          const ripple = document.createElement("div");
+          Object.assign(ripple.style, {
+            position: "fixed",
+            left: `${x}px`,
+            top: `${y}px`,
+            width: `${size}px`,
+            height: `${size}px`,
+            marginLeft: `${-size / 2}px`,
+            marginTop: `${-size / 2}px`,
+            borderRadius: "50%",
+            border,
+            boxShadow: `0 0 10px rgba(${accent},0.4)`,
+            zIndex: "2147483645",
+            pointerEvents: "none",
+            transition: `transform ${duration}ms ease-out, opacity ${duration}ms ease-out`,
+            transform: "scale(1)",
+            opacity: "1",
+          });
+          document.body.appendChild(ripple);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              ripple.style.transform = `scale(${scale})`;
+              ripple.style.opacity = "0";
+            });
+          });
+          setTimeout(() => ripple.remove(), duration + 50);
         });
-      });
-      setTimeout(() => ripple.remove(), 450);
-    }, pos)
+      },
+      { x: pos.x, y: pos.y, cursorId: CURSOR_ID, accent: ACCENT_COLOR },
+    )
     .catch(() => {});
 }
 
@@ -440,20 +526,22 @@ async function setZoom(page: Page, level: number, origin: Point | null): Promise
 
 /** Scrolls the site frame's own document by `deltaY` with an eased animation. */
 async function smoothScrollBy(siteFrame: Frame, deltaY: number): Promise<void> {
-  const frameCount = 24;
   await siteFrame.evaluate(
-    async ({ deltaY, durationMs, frameCount }) => {
+    // Same inline-IIFE-with-`while`-loop shape as moveCursorTo, for the same
+    // reason: no named function binding for `page.evaluate` to trip over.
+    async ({ deltaY, durationMs }) => {
       const startY = window.scrollY;
-      const frameDelay = durationMs / frameCount;
-      for (let i = 1; i <= frameCount; i++) {
-        const t = i / frameCount;
+      const start = performance.now();
+      let t = 0;
+      while (t < 1) {
+        const now = await new Promise<number>((resolve) => requestAnimationFrame(resolve));
+        t = Math.min(1, durationMs > 0 ? (now - start) / durationMs : 1);
         // easeInOutQuad, inlined to avoid a named helper closure.
         const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
         window.scrollTo(0, startY + deltaY * eased);
-        await new Promise((r) => setTimeout(r, frameDelay));
       }
     },
-    { deltaY, durationMs: TIMING.scrollAnimationMs, frameCount },
+    { deltaY, durationMs: TIMING.scrollAnimationMs },
   );
 }
 
@@ -624,12 +712,17 @@ async function runAction(
       }
       break;
     }
-    case "type":
+    case "type": {
       if (cursorAt) await showClickRipple(page, cursorAt);
-      await resolveLocator(siteRoot, action)!.pressSequentially(action.value, {
-        delay: action.typeDelayMs,
-      });
+      const locator = resolveLocator(siteRoot, action)!;
+      // Per-character jitter instead of one fixed delay — nobody types at a
+      // perfectly even cadence, and a constant delay reads as robotic on camera.
+      for (const ch of action.value) {
+        const jitteredDelay = Math.max(0, action.typeDelayMs * (0.6 + Math.random() * 0.8));
+        await locator.pressSequentially(ch, { delay: jitteredDelay });
+      }
       break;
+    }
     case "press":
       await page.keyboard.press(action.key);
       break;
@@ -697,7 +790,7 @@ export async function recordScript(
   const context = await browser.newContext({
     viewport: recordingViewport,
     recordVideo: { dir: outputDir, size: recordingViewport },
-    storageState: script.auth?.storageState,
+    storageState: script.auth?.storageState ? loadStorageState(script.auth.storageState) : undefined,
   });
   await applyAuth(context, script.auth);
   const page = await context.newPage();
@@ -748,7 +841,7 @@ export async function recordScript(
       const box = await targetLocator.boundingBox().catch(() => null);
 
       if (box) {
-        await showHighlight(page, box);
+        if (step.highlight) await showHighlight(page, box);
         const target = centerOfBox(box);
 
         if (step.zoom) {
@@ -767,7 +860,8 @@ export async function recordScript(
         const pointerTarget = isPointerAction(step.action) ? target : null;
         if (pointerTarget) {
           await ensureCursor(page, cursorPos);
-          const moveMs = Math.min(TIMING.cursorMoveMs, settleMs);
+          const distance = Math.hypot(pointerTarget.x - cursorPos.x, pointerTarget.y - cursorPos.y);
+          const moveMs = Math.min(cursorMoveDuration(distance), settleMs);
           await moveCursorTo(page, cursorPos, pointerTarget, moveMs);
           cursorPos = pointerTarget;
           cursorAt = pointerTarget;

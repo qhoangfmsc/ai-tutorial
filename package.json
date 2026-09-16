@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "generate": "tsx pipeline/src/generate.ts",
+    "generate": "tsx --env-file-if-exists=.env pipeline/src/generate.ts",
     "capture-auth": "tsx pipeline/src/capture-auth.ts",
     "format": "prettier --ignore-path .prettierignore --write ."
   },

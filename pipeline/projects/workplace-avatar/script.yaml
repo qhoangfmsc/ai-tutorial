@@ -2,7 +2,11 @@ title: "Hướng dẫn đổi avatar trên Workplace"
 viewport:
   width: 1280
   height: 676
-voice: "Linh"
+# voice: "Linh"
+tts:
+  provider: "omnivoice"
+  voice: "chi-mai"
+  language: "vi"
 
 intro:
   heading: "Workplace"
@@ -28,12 +32,14 @@ steps:
 
   - narration: "Đưa chuột vào avatar người dùng trên thanh điều hướng."
     caption: "Mở menu tài khoản"
+    highlight: false
     action:
       type: hover
       selector: "[aria-haspopup='list'][role='button']:has(.el-avatar.el-avatar--circle)"
 
   - narration: "Chọn 'Chỉnh sửa hồ sơ' trong menu vừa mở."
     caption: "Chọn 'Chỉnh sửa hồ sơ'"
+    highlight: false
     action:
       type: click
       find:
@@ -41,7 +47,7 @@ steps:
 
   - narration: "Nhấn vào biểu tượng bút chì trên ảnh đại diện, chọn ảnh mong muốn và bắt đầu cập nhật."
     caption: "Đổi ảnh đại diện"
-    highlightSelector: "label[for='input-avatar']"
+    # highlightSelector: "label[for='input-avatar']"
     action:
       type: upload
       selector: "#input-avatar"

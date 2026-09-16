@@ -3,6 +3,10 @@ viewport:
   width: 1280
   height: 676
 voice: "Linh"
+tts:
+  provider: "omnivoice"
+  voice: "chi-mai"
+  language: "vi"
 
 intro:
   heading: "Demo Tutorial"

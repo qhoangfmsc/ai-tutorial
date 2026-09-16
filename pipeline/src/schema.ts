@@ -101,6 +101,14 @@ export const StepSchema = z.object({
    * Defaults to the action's own selector when the action targets one.
    */
   highlightSelector: z.string().min(1).optional(),
+  /**
+   * Whether to draw the red focus box at all for this step. Defaults to
+   * true for any step whose action resolves to a real target (click, type,
+   * hover, upload, waitForSelector, or scroll-to-selector) — set to false
+   * on steps where you don't want that red box to show, without having to
+   * touch `highlightSelector` or the action itself.
+   */
+  highlight: z.boolean().default(true),
   /** Camera zoom-in on the step's target while it plays; zooms back out after the action. */
   zoom: z
     .object({
@@ -132,10 +140,27 @@ export const ScriptSchema = z.object({
   viewport: z
     .object({ width: z.number().int().positive(), height: z.number().int().positive() })
     .default({ width: 1280, height: 676 }),
-  /** macOS `say` voice name. */
+  /** macOS `say` voice name. Ignored when `tts.provider` is `omnivoice`. */
   voice: z.string().default("Linh"),
   /** Speech rate in words-per-minute passed to macOS `say` — lower reads slower/calmer. */
   voiceRate: z.number().int().positive().default(175),
+  /**
+   * TTS backend. `say` (default) is macOS's offline built-in voice — always
+   * available, no setup. `omnivoice` calls the OmniVoice API for a much more
+   * natural voice; needs `OMNIVOICE_API_KEY` set (see `.env`) and a real
+   * `voice` slug from that account's `GET /api/voices`.
+   */
+  tts: z
+    .object({
+      provider: z.enum(["say", "omnivoice"]).default("say"),
+      baseUrl: z.string().url().default("http://omnivoice.tunnel.zobite.com"),
+      /** Voice slug from `GET /api/voices` — required once `provider` is `omnivoice`. */
+      voice: z.string().optional(),
+      language: z.enum(["vi", "en"]).default("vi"),
+      /** Playback speed multiplier, 0.5–2.0. */
+      speed: z.number().min(0.5).max(2).default(1.0),
+    })
+    .default({ provider: "say", baseUrl: "http://omnivoice.tunnel.zobite.com", language: "vi", speed: 1.0 }),
   intro: BrandScreenSchema.optional(),
   outro: BrandScreenSchema.optional(),
   /**

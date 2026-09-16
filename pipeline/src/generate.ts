@@ -3,7 +3,7 @@ import { mkdirSync, existsSync } from "node:fs";
 import { parseScript } from "./parser";
 import { recordScript, CHROME_HEIGHT } from "./actor";
 import { assembleMainVideo, buildBrandClip, concatClips } from "./assemble";
-import { synthesize, type TtsResult } from "./tts";
+import { synthesize, synthesizeWithOmniVoice, type TtsResult } from "./tts";
 import { validateScript } from "./validate";
 
 /**
@@ -47,12 +47,16 @@ async function main() {
   console.log("✔ Kịch bản hợp lệ, mọi mục tiêu đều tìm thấy.");
 
   const synth = (text: string, baseNameNoExt: string): Promise<TtsResult> =>
-    synthesize(text, script.voice, join(audioDir, `${baseNameNoExt}.wav`), script.voiceRate);
+    script.tts.provider === "omnivoice"
+      ? synthesizeWithOmniVoice(text, script.tts, join(audioDir, `${baseNameNoExt}.wav`))
+      : synthesize(text, script.voice, join(audioDir, `${baseNameNoExt}.wav`), script.voiceRate);
 
-  console.log(`▶ Sinh giọng đọc (${script.voice})...`);
-  // Every narration line is an independent `say`+ffmpeg subprocess pair —
-  // running them concurrently instead of one-by-one cuts this phase's wall
-  // time roughly by the number of lines, with no effect on the result.
+  const voiceLabel =
+    script.tts.provider === "omnivoice" ? `OmniVoice: ${script.tts.voice}` : `say: ${script.voice}`;
+  console.log(`▶ Sinh giọng đọc (${voiceLabel})...`);
+  // Every narration line is an independent TTS call — running them
+  // concurrently instead of one-by-one cuts this phase's wall time roughly
+  // by the number of lines, with no effect on the result.
   const [introAudio, stepAudio, outroAudio] = await Promise.all([
     script.intro?.narration ? synth(script.intro.narration, "intro") : Promise.resolve(null),
     Promise.all(script.steps.map((step, i) => synth(step.narration, `step-${i}`))),

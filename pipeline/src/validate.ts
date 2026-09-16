@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 import type { Action, TutorialScript } from "./schema";
 import { resolveLocator, clickCatchingPopup, withRetry, TIMING } from "./actor";
-import { applyAuth } from "./auth";
+import { applyAuth, loadStorageState } from "./auth";
 
 function describeTarget(action: Action): string {
   if ("selector" in action && action.selector) return `selector "${action.selector}"`;
@@ -25,7 +25,7 @@ export async function validateScript(script: TutorialScript): Promise<void> {
   const browser = await chromium.launch();
   const context = await browser.newContext({
     viewport: script.viewport,
-    storageState: script.auth?.storageState,
+    storageState: script.auth?.storageState ? loadStorageState(script.auth.storageState) : undefined,
   });
   await applyAuth(context, script.auth);
   const page = await context.newPage();
