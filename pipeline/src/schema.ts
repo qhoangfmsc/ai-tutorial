@@ -82,8 +82,8 @@ export const ActionSchema = z.discriminatedUnion("type", [
        * dir. Sets the target `<input type="file">`'s files directly — no
        * real OS file-picker dialog is opened (Playwright can't drive those),
        * so this works whether the target is the hidden input itself or is
-       * targeted via `highlightSelector` pointing at the visible control
-       * that would normally open it.
+       * targeted via `targetSelector` pointing at the visible control that
+       * would normally open it.
        */
       filePath: z.string().min(1),
     })
@@ -97,16 +97,25 @@ export const StepSchema = z.object({
   caption: z.string().min(1).optional(),
   action: ActionSchema,
   /**
-   * Selector to draw a rectangle highlight around while this step plays.
-   * Defaults to the action's own selector when the action targets one.
+   * The element this step's cursor movement, camera zoom, and (if
+   * `highlight` is true) red focus box all key off of. Defaults to the
+   * action's own selector/find target when omitted — only set this when
+   * that target isn't a good visual stand-in, most commonly a hidden
+   * `<input type="file">` behind an `upload` action, where this should
+   * point at the visible label/button that represents it on screen.
+   *
+   * This is deliberately a *visual target*, not a highlight-only setting —
+   * whether the box actually gets drawn is controlled independently by
+   * `highlight` below, so "where the cursor goes" and "is there a red box"
+   * never get tangled into one setting.
    */
-  highlightSelector: z.string().min(1).optional(),
+  targetSelector: z.string().min(1).optional(),
   /**
-   * Whether to draw the red focus box at all for this step. Defaults to
-   * true for any step whose action resolves to a real target (click, type,
-   * hover, upload, waitForSelector, or scroll-to-selector) — set to false
-   * on steps where you don't want that red box to show, without having to
-   * touch `highlightSelector` or the action itself.
+   * Whether to draw the red focus box for this step. Defaults to true for
+   * any step whose target (see `targetSelector` above) resolves to a real,
+   * visible element. Set to false to keep the cursor/zoom behavior but hide
+   * the box — independent of `targetSelector`, which only decides *where*,
+   * never *whether to draw*.
    */
   highlight: z.boolean().default(true),
   /** Camera zoom-in on the step's target while it plays; zooms back out after the action. */

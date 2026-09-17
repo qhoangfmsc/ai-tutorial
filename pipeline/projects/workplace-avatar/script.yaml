@@ -39,15 +39,53 @@ steps:
 
   - narration: "Chọn 'Chỉnh sửa hồ sơ' trong menu vừa mở."
     caption: "Chọn 'Chỉnh sửa hồ sơ'"
-    highlight: false
     action:
       type: click
       find:
         text: "Chỉnh sửa hồ sơ"
 
+  - narration: "Kéo xuống xem qua các thông tin có trong trang hồ sơ."
+    caption: "Xem các thông tin cá nhân"
+    highlight: false
+    action:
+      type: scroll
+      selector: "textarea[placeholder='Description']"
+
+  - narration: "Tên đăng nhập đang bị khoá, không thể chỉnh sửa trực tiếp ở đây."
+    caption: "Username: không chỉnh được"
+    action:
+      type: hover
+      selector: "input[placeholder='Username']"
+
+  - narration: "Email cũng vậy, không sửa được."
+    caption: "Email: không chỉnh được"
+    action:
+      type: hover
+      selector: "input[placeholder='Email']"
+
+  - narration: "Họ tên cũng đang bị khoá luôn."
+    caption: "Name: không chỉnh được"
+    action:
+      type: hover
+      selector: "input[placeholder='Name']"
+
+  - narration: "Riêng ô Mô tả thì có thể chỉnh sửa bình thường."
+    caption: "Description: chỉnh được"
+    action:
+      type: hover
+      selector: "textarea[placeholder='Description']"
+
+  - narration: "Nhưng hôm nay mình sẽ chỉ tập trung đổi ảnh đại diện thôi, nên kéo lên lại đầu trang."
+    caption: "Kéo lên lại đầu trang"
+    highlight: false
+    action:
+      type: scroll
+      selector: "label[for='input-avatar']"
+
   - narration: "Nhấn vào biểu tượng bút chì trên ảnh đại diện, chọn ảnh mong muốn và bắt đầu cập nhật."
     caption: "Đổi ảnh đại diện"
-    # highlightSelector: "label[for='input-avatar']"
+    targetSelector: "label[for='input-avatar']"
+    highlight: false
     action:
       type: upload
       selector: "#input-avatar"

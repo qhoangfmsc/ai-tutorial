@@ -47,8 +47,13 @@ Xem `pipeline/projects/onboarding-flow/script.yaml`. Ở cấp script:
   - `action`: thao tác Playwright — `goto`, `click`, `type`, `press`,
     `hover`, `scroll`, `wait`, `waitForSelector`, `upload`. Xem
     `src/schema.ts` để biết đầy đủ tham số từng loại.
-  - `highlightSelector` _(tuỳ chọn)_: mặc định lấy theo selector của
-    action; khoanh khung đỏ quanh phần tử này.
+  - `targetSelector` _(tuỳ chọn)_: phần tử cursor/zoom/khung đỏ đều nhắm
+    vào; mặc định lấy theo selector/find của chính action. Chỉ cần khai khi
+    mục tiêu thật của action không hiển thị được (vd input file ẩn sau
+    `upload` — trỏ sang label/nút hiển thị thay thế).
+  - `highlight` _(tuỳ chọn, mặc định `true`)_: có vẽ khung đỏ quanh
+    `targetSelector` hay không — tách biệt hoàn toàn khỏi việc cursor/zoom
+    có nhắm tới đó hay không.
   - Mỗi step kéo dài đúng bằng thời gian đọc narration hoặc thời gian action
     thực thi (tuỳ cái nào lâu hơn), cộng thêm một khoảng nghỉ nhịp cố định
     trước khi sang step kế — không có "thời lượng tối thiểu" ép buộc nữa.
@@ -58,8 +63,11 @@ Xem `pipeline/projects/onboarding-flow/script.yaml`. Ở cấp script:
 ```
 schema.ts       → định nghĩa & validate cấu trúc kịch bản (zod)
 parser.ts       → đọc file YAML, validate theo schema
-tts.ts          → sinh audio narration bằng macOS `say`, đo duration thật
+tts.ts          → sinh audio narration (macOS `say` hoặc OmniVoice), đo duration thật
 audio-utils.ts  → tiện ích chạy lệnh con + đo duration qua ffprobe
+cursor.ts       → toàn bộ phần con trỏ chuột: icon SVG (mũi tên/bàn tay/I-beam),
+                  di chuyển mượt (requestAnimationFrame), đổi icon theo CSS
+                  `cursor` thật của mục tiêu, ripple/bounce lúc click
 actor.ts        → Playwright chạy toàn bộ script trong 1 phiên liên tục:
                   vẽ highlight → giữ 2s → tắt highlight → thao tác →
                   giữ kết quả ≥1.5s → sang step kế; ghi video + timestamp

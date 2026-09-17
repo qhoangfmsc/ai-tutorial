@@ -65,16 +65,32 @@ Mỗi phần tử cần bấm/gõ/hover chọn 1 trong 2 cách để trỏ tới
   thị trên màn hình, dùng được với **bất kỳ trang nào** kể cả không sửa được
   HTML. `role`/`near` chỉ cần khi có nhiều phần tử trùng tên.
 
-**Khung đỏ focus:** mặc định bước nào có mục tiêu (click/type/hover/upload/...)
-đều tự vẽ khung đỏ quanh mục tiêu đó, kể cả khi bạn không khai `highlightSelector`.
-Muốn tắt khung đỏ ở riêng bước nào, thêm `highlight: false` vào bước đó:
+**Cursor/zoom/khung đỏ nhắm vào đâu, và có vẽ khung đỏ hay không, là 2 việc
+tách biệt:**
+
+- `targetSelector` _(tuỳ chọn)_: phần tử mà cursor sẽ bay tới + camera zoom
+  vào + (nếu bật) khung đỏ khoanh quanh. Mặc định lấy theo `selector`/`find`
+  của chính action đó. Chỉ cần khai riêng khi mục tiêu thật của action
+  **không hiển thị được** trên màn hình — ví dụ action `upload` thường trỏ
+  vào 1 `<input type="file">` bị ẩn (`display:none`), lúc đó `targetSelector`
+  trỏ sang cái nút/label hiển thị thay thế, để cursor có chỗ mà bay tới.
+- `highlight: true/false` _(mặc định `true`)_: có vẽ khung đỏ hay không.
+  Không liên quan gì tới `targetSelector` — tắt khung đỏ không có nghĩa
+  cursor cũng ngừng di chuyển tới đó.
 
 ```yaml
   - narration: "Đưa chuột vào avatar."
-    highlight: false # bước này không cần khoanh đỏ
+    highlight: false # tắt khung đỏ, cursor vẫn bay tới bình thường
     action:
       type: hover
       selector: "..."
+
+  - narration: "Nhấn bút chì để đổi ảnh."
+    targetSelector: "label[for='input-avatar']" # input file thật bị ẩn, phải trỏ sang label
+    action:
+      type: upload
+      selector: "#input-avatar"
+      filePath: "~/anh-moi.jpg"
 ```
 
 ### Các loại `action` có sẵn

@@ -37,14 +37,22 @@ export async function validateScript(script: TutorialScript): Promise<void> {
       const stepLabel = `Bước ${i + 1} ("${step.narration}")`;
 
       try {
-        const targetLocator = step.highlightSelector
-          ? page.locator(step.highlightSelector)
+        const targetLocator = step.targetSelector
+          ? page.locator(step.targetSelector)
           : resolveLocator(page, action);
         if (targetLocator) {
-          // A slow/flaky network response can make the target show up just
-          // after a single wait would have given up — retry the wait
-          // itself (read-only, safe to repeat) before failing the step.
-          await withRetry(() => targetLocator.waitFor({ timeout: TIMING.targetWaitMs }));
+          // Waiting for "visible" (the default) is right for every action
+          // except a selector-based `upload` with no explicit
+          // `targetSelector` — its own selector commonly targets a
+          // deliberately hidden `<input type="file">`, which would never
+          // become visible and would always time out here. "attached" (just
+          // present in the DOM) is enough in that one case; the actual
+          // upload doesn't need visibility either. A slow/flaky network
+          // response can also make the target show up just after a single
+          // wait would have given up — retry the wait itself (read-only,
+          // safe to repeat) before failing the step.
+          const waitState = !step.targetSelector && action.type === "upload" ? "attached" : "visible";
+          await withRetry(() => targetLocator.waitFor({ timeout: TIMING.targetWaitMs, state: waitState }));
         }
 
         switch (action.type) {

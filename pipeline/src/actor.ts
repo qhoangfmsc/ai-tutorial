@@ -4,6 +4,16 @@ import { homedir } from "node:os";
 import { chromium, type Page, type Locator, type FrameLocator, type Frame } from "playwright";
 import type { Action, Find, TutorialScript } from "./schema";
 import { applyAuth, loadStorageState } from "./auth";
+import {
+  type Point,
+  ACCENT_COLOR,
+  ensureCursor,
+  setCursorKind,
+  detectCursorKind,
+  cursorMoveDuration,
+  moveCursorTo,
+  showClickRipple,
+} from "./cursor";
 
 /** Expands a leading `~` to the user's home dir; absolute paths pass through unchanged. */
 export function expandHome(path: string): string {
@@ -13,7 +23,8 @@ export function expandHome(path: string): string {
 /**
  * Every pacing/animation/timeout duration lives here — tune the overall
  * feel (or how patient network waits are) in one place instead of hunting
- * through each helper for a magic number.
+ * through each helper for a magic number. Cursor glide timing lives in
+ * `cursor.ts` instead, alongside the rest of the cursor-rendering code.
  */
 export const TIMING = {
   /** How long the highlight box takes to fade/scale in or out. */
@@ -27,9 +38,6 @@ export const TIMING = {
    * amount regardless of how short (or long) that sentence is.
    */
   minHighlightSettleMs: 800,
-  /** Floor/ceiling on cursor glide duration — actual time scales with travel distance (see cursorMoveDuration). */
-  cursorMoveMinMs: 220,
-  cursorMoveMaxMs: 650,
   /** Camera zoom in/out transition. */
   zoomTransitionMs: 500,
   /** `scrollIntoView`/manual-scroll animation. */
@@ -168,11 +176,6 @@ function buildWrapperHtml(viewportWidth: number, viewportHeight: number): string
   </body></html>`;
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
 interface Box extends Point {
   width: number;
   height: number;
@@ -236,7 +239,7 @@ const HIGHLIGHT_ID = "__tutorial_highlight__";
 
 async function showHighlight(page: Page, box: Box): Promise<void> {
   await page.evaluate(
-    ({ box, id, fadeMs }) => {
+    ({ box, id, fadeMs, accent }) => {
       const existing = document.getElementById(id);
       if (existing) existing.remove();
 
@@ -248,9 +251,9 @@ async function showHighlight(page: Page, box: Box): Promise<void> {
         top: `${box.y - 8}px`,
         width: `${box.width + 16}px`,
         height: `${box.height + 16}px`,
-        border: "3px solid #ff3b30",
+        border: `3px solid rgb(${accent})`,
         borderRadius: "10px",
-        boxShadow: "0 0 0 4px rgba(255,59,48,0.25), 0 0 16px rgba(255,59,48,0.5)",
+        boxShadow: `0 0 0 4px rgba(${accent},0.25), 0 0 16px rgba(${accent},0.5)`,
         zIndex: "2147483647",
         pointerEvents: "none",
         opacity: "0",
@@ -268,7 +271,7 @@ async function showHighlight(page: Page, box: Box): Promise<void> {
         });
       });
     },
-    { box, id: HIGHLIGHT_ID, fadeMs: TIMING.highlightFadeMs },
+    { box, id: HIGHLIGHT_ID, fadeMs: TIMING.highlightFadeMs, accent: ACCENT_COLOR },
   );
 }
 
@@ -299,193 +302,6 @@ async function clearHighlight(page: Page): Promise<void> {
     .catch(() => {
       // Page may have navigated away already — the box is gone with it.
     });
-}
-
-const CURSOR_ID = "__tutorial_cursor__";
-/** Shared with the highlight box so the cursor visually "belongs" to the same focus cue. */
-const ACCENT_COLOR = "255,59,48";
-
-/**
- * A classic arrow-pointer silhouette, tip at (0,0) — matching a real OS
- * cursor's hotspot — so positioning the element's top-left corner at the
- * target point lines the tip up exactly with the click location. Sized
- * slightly above a real OS cursor (20x27 vs. ~16x22) so it's easier to spot
- * without looking like an artificial overlay.
- */
-const CURSOR_SVG =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(
-    `<svg xmlns='http://www.w3.org/2000/svg' width='16' height='22' viewBox='0 0 16 22'>` +
-      `<path d='M0 0 L0 15.5 L3.8 12 L6.8 19 L9.4 17.8 L6.5 11 L12.5 11 Z' fill='white' stroke='black' stroke-width='1' stroke-linejoin='miter'/>` +
-      `</svg>`,
-  );
-
-/** Creates the cursor icon at `pos` if it doesn't exist yet, or snaps it there instantly. */
-async function ensureCursor(page: Page, pos: Point): Promise<void> {
-  await page
-    .evaluate(
-      ({ id, x, y, svg }) => {
-        let el = document.getElementById(id) as HTMLDivElement | null;
-        if (!el) {
-          el = document.createElement("div");
-          el.id = id;
-          Object.assign(el.style, {
-            position: "fixed",
-            width: "20px",
-            height: "27px",
-            backgroundImage: `url("${svg}")`,
-            backgroundSize: "contain",
-            backgroundRepeat: "no-repeat",
-            filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.5))",
-            zIndex: "2147483646",
-            pointerEvents: "none",
-          });
-          document.body.appendChild(el);
-        }
-        el.style.left = `${x}px`;
-        el.style.top = `${y}px`;
-      },
-      { id: CURSOR_ID, x: pos.x, y: pos.y, svg: CURSOR_SVG },
-    )
-    .catch(() => {
-      // Page mid-navigation — the next step will (re-)create the cursor.
-    });
-}
-
-/**
- * How long a cursor glide of `distance` px should take — short hops read as
- * snappy, long cross-screen jumps take a bit longer but sublinearly
- * (roughly Fitts's law), capped so a corner-to-corner move never drags the
- * scene out.
- */
-function cursorMoveDuration(distance: number): number {
-  const t = Math.min(1, distance / 900);
-  return TIMING.cursorMoveMinMs + (TIMING.cursorMoveMaxMs - TIMING.cursorMoveMinMs) * Math.sqrt(t);
-}
-
-/**
- * Animates the cursor dot from `from` to `to`, driven by
- * `requestAnimationFrame` against real elapsed time rather than a fixed
- * `setTimeout` step schedule — the latter drifts under event-loop load and
- * reads as micro-stutter on camera, exactly what a "silky" cursor can't
- * afford. Deliberately not a straight-line lerp either: this bows the path
- * slightly off the direct line and settles with a touch of overshoot near
- * arrival, like a real hand — but with no per-frame jitter, since random
- * noise is itself a form of stutter, not a human cue.
- */
-async function moveCursorTo(page: Page, from: Point, to: Point, durationMs: number): Promise<void> {
-  await page
-    .evaluate(
-      // An inline async IIFE with a `while` loop, not a named recursive
-      // helper — a named function/arrow bound to an identifier gets wrapped
-      // in a `__name(...)` call by the build step, which breaks once
-      // Playwright serializes this function's source and re-runs it
-      // standalone in the page (the helper it calls doesn't exist there).
-      async ({ id, from, to, durationMs }) => {
-        const el = document.getElementById(id) as HTMLDivElement | null;
-        if (!el) return;
-
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const distance = Math.hypot(dx, dy);
-
-        const arcMax = 24;
-        const arc = Math.min(arcMax, distance * 0.1) * (Math.random() < 0.5 ? -1 : 1);
-        const nx = distance > 0 ? -dy / distance : 0;
-        const ny = distance > 0 ? dx / distance : 0;
-        const midX = from.x + dx / 2 + nx * arc;
-        const midY = from.y + dy / 2 + ny * arc;
-
-        const start = performance.now();
-        let t = 0;
-        while (t < 1) {
-          const now = await new Promise<number>((resolve) => requestAnimationFrame(resolve));
-          t = Math.min(1, durationMs > 0 ? (now - start) / durationMs : 1);
-
-          // Gentle easeOutBack: a small overshoot past the target before
-          // settling, softer than a full bounce so it reads as a smooth
-          // arrival rather than a wobble.
-          const c1 = 0.28;
-          const eased = t >= 1 ? 1 : 1 + (c1 + 1) * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
-
-          const u = 1 - eased;
-          const x = u * u * from.x + 2 * u * eased * midX + eased * eased * to.x;
-          const y = u * u * from.y + 2 * u * eased * midY + eased * eased * to.y;
-          el.style.left = `${x}px`;
-          el.style.top = `${y}px`;
-        }
-
-        el.style.left = `${to.x}px`;
-        el.style.top = `${to.y}px`;
-      },
-      { id: CURSOR_ID, from, to, durationMs },
-    )
-    .catch(() => {});
-}
-
-/**
- * A bold double-ring pulse at `pos` to mark a click, plus an exaggerated
- * squash-bounce on the cursor icon — deliberately more emphatic than a real
- * click's feedback would be, so every action reads as obvious at a glance
- * rather than blending into the recording.
- */
-async function showClickRipple(page: Page, pos: Point): Promise<void> {
-  await page
-    .evaluate(
-      ({ x, y, cursorId, accent }) => {
-        const cursor = document.getElementById(cursorId) as HTMLDivElement | null;
-        if (cursor) {
-          cursor.style.transformOrigin = "0 0";
-          cursor.style.transition = "transform 90ms ease-out";
-          cursor.style.transform = "scale(0.65)";
-          setTimeout(() => {
-            cursor.style.transition = "transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1)";
-            cursor.style.transform = "scale(1.2)";
-            setTimeout(() => {
-              cursor.style.transition = "transform 140ms ease-out";
-              cursor.style.transform = "scale(1)";
-            }, 200);
-          }, 90);
-        }
-
-        // Two concentric rings — a solid inner one and a softer outer one —
-        // read as a much bolder "something just happened here" cue than a
-        // single thin ring, especially at video-compressed bitrates.
-        [
-          { size: 14, border: `3px solid rgba(${accent},0.95)`, scale: 4, duration: 550 },
-          { size: 14, border: `1.5px solid rgba(${accent},0.5)`, scale: 6, duration: 650 },
-        ].forEach(({ size, border, scale, duration }) => {
-          const ripple = document.createElement("div");
-          Object.assign(ripple.style, {
-            position: "fixed",
-            left: `${x}px`,
-            top: `${y}px`,
-            width: `${size}px`,
-            height: `${size}px`,
-            marginLeft: `${-size / 2}px`,
-            marginTop: `${-size / 2}px`,
-            borderRadius: "50%",
-            border,
-            boxShadow: `0 0 10px rgba(${accent},0.4)`,
-            zIndex: "2147483645",
-            pointerEvents: "none",
-            transition: `transform ${duration}ms ease-out, opacity ${duration}ms ease-out`,
-            transform: "scale(1)",
-            opacity: "1",
-          });
-          document.body.appendChild(ripple);
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              ripple.style.transform = `scale(${scale})`;
-              ripple.style.opacity = "0";
-            });
-          });
-          setTimeout(() => ripple.remove(), duration + 50);
-        });
-      },
-      { x: pos.x, y: pos.y, cursorId: CURSOR_ID, accent: ACCENT_COLOR },
-    )
-    .catch(() => {});
 }
 
 function isPointerAction(
@@ -827,8 +643,8 @@ export async function recordScript(
       startMs: Date.now() - startedAt,
     });
 
-    const targetLocator = step.highlightSelector
-      ? siteRoot.locator(step.highlightSelector)
+    const targetLocator = step.targetSelector
+      ? siteRoot.locator(step.targetSelector)
       : resolveLocator(siteRoot, step.action);
     let cursorAt: Point | null = null;
     let zoomTarget: Point | null = null;
@@ -860,9 +676,15 @@ export async function recordScript(
         const pointerTarget = isPointerAction(step.action) ? target : null;
         if (pointerTarget) {
           await ensureCursor(page, cursorPos);
+          await setCursorKind(page, "arrow"); // plain arrow while in transit, like a real cursor over open space
           const distance = Math.hypot(pointerTarget.x - cursorPos.x, pointerTarget.y - cursorPos.y);
           const moveMs = Math.min(cursorMoveDuration(distance), settleMs);
           await moveCursorTo(page, cursorPos, pointerTarget, moveMs);
+          // Only once it's actually arrived does it show the icon that
+          // element would give a real cursor — pointer over a link/button,
+          // I-beam over a text field, arrow otherwise.
+          const kind = await detectCursorKind(targetLocator, step.action);
+          await setCursorKind(page, kind);
           cursorPos = pointerTarget;
           cursorAt = pointerTarget;
           const remaining = settleMs - moveMs;
